@@ -1,3 +1,6 @@
+// Backend URL configuration - change this to point to your backend server
+const BACKEND_URL = window.BACKEND_URL || 'ws://localhost:8000';
+
 (function() {
   const originalLog = console.log.bind(console);
   console.log = (...args) => {
@@ -102,7 +105,7 @@ async function startRawPcmCapture() {
     });
     mediaStream = stream;
     initAudioContext();
-    await audioContext.audioWorklet.addModule('/static/pcmWorkletProcessor.js');
+    await audioContext.audioWorklet.addModule('./pcmWorkletProcessor.js');
     micWorkletNode = new AudioWorkletNode(audioContext, 'pcm-worklet-processor');
 
     micWorkletNode.port.onmessage = ({ data }) => {
@@ -136,7 +139,7 @@ async function startRawPcmCapture() {
 }
 
 async function setupTTSPlayback() {
-  await audioContext.audioWorklet.addModule('/static/ttsPlaybackProcessor.js');
+  await audioContext.audioWorklet.addModule('./ttsPlaybackProcessor.js');
   ttsWorkletNode = new AudioWorkletNode(
     audioContext,
     'tts-playback-processor'
@@ -299,8 +302,18 @@ document.getElementById("startBtn").onclick = async () => {
   }
   statusDiv.textContent = "Initializing connection...";
 
-  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  socket = new WebSocket(`${wsProto}//${location.host}/ws`);
+  // Build WebSocket URL from BACKEND_URL
+  let wsUrl;
+  if (BACKEND_URL.startsWith('wss://') || BACKEND_URL.startsWith('ws://')) {
+    wsUrl = BACKEND_URL;
+  } else if (BACKEND_URL.startsWith('https://')) {
+    wsUrl = BACKEND_URL.replace('https://', 'wss://');
+  } else if (BACKEND_URL.startsWith('http://')) {
+    wsUrl = BACKEND_URL.replace('http://', 'ws://');
+  } else {
+    wsUrl = 'ws://' + BACKEND_URL;
+  }
+  socket = new WebSocket(`${wsUrl}/ws`);
 
   socket.onopen = async () => {
     statusDiv.textContent = "Connected. Activating mic and TTS…";
@@ -344,15 +357,19 @@ document.getElementById("stopBtn").onclick = () => {
   statusDiv.textContent = "Stopped.";
 };
 
-document.getElementById("copyBtn").onclick = () => {
-  const text = chatHistory
-    .map(msg => `${msg.role.charAt(0).toUpperCase() + msg.role.slice(1)}: ${msg.content}`)
-    .join('\n');
-  
-  navigator.clipboard.writeText(text)
-    .then(() => console.log("Conversation copied to clipboard"))
-    .catch(err => console.error("Copy failed:", err));
-};
+// Copy button (if exists in HTML)
+const copyBtn = document.getElementById("copyBtn");
+if (copyBtn) {
+  copyBtn.onclick = () => {
+    const text = chatHistory
+      .map(msg => `${msg.role.charAt(0).toUpperCase() + msg.role.slice(1)}: ${msg.content}`)
+      .join('\n');
+    
+    navigator.clipboard.writeText(text)
+      .then(() => console.log("Conversation copied to clipboard"))
+      .catch(err => console.error("Copy failed:", err));
+  };
+}
 
 // First render
 renderMessages();
