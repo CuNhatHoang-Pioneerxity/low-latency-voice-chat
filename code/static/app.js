@@ -373,3 +373,149 @@ if (copyBtn) {
 
 // First render
 renderMessages();
+
+// --------------------------------------------------------------------
+// System Prompt Configuration
+// --------------------------------------------------------------------
+const settingsBtn = document.getElementById("settingsBtn");
+const settingsModal = document.getElementById("settingsModal");
+const systemPromptInput = document.getElementById("systemPromptInput");
+const cancelSettingsBtn = document.getElementById("cancelSettingsBtn");
+const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+
+// Build API URL from BACKEND_URL
+function getApiUrl() {
+  if (BACKEND_URL.startsWith('http://') || BACKEND_URL.startsWith('https://')) {
+    return BACKEND_URL;
+  }
+  return 'http://' + BACKEND_URL.replace(/^wss?:\/\//, '');
+}
+
+// Open settings modal
+if (settingsBtn) {
+  settingsBtn.onclick = async () => {
+    try {
+      const response = await fetch(`${getApiUrl()}/api/system-prompt`, {
+        headers: { "ngrok-skip-browser-warning": "true" }
+      });
+      const data = await response.json();
+      systemPromptInput.value = data.system_prompt || "";
+    } catch (err) {
+      console.error("Failed to load system prompt:", err);
+      systemPromptInput.value = "";
+    }
+    settingsModal.style.display = "flex";
+  };
+}
+
+// Close modal
+if (cancelSettingsBtn) {
+  cancelSettingsBtn.onclick = () => {
+    settingsModal.style.display = "none";
+  };
+}
+
+// Save system prompt
+if (saveSettingsBtn) {
+  saveSettingsBtn.onclick = async () => {
+    const newPrompt = systemPromptInput.value.trim();
+    if (!newPrompt) {
+      alert("System prompt cannot be empty.");
+      return;
+    }
+    
+    try {
+      const response = await fetch(`${getApiUrl()}/api/system-prompt`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true"
+        },
+        body: JSON.stringify({ system_prompt: newPrompt })
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        console.log("System prompt updated successfully");
+        settingsModal.style.display = "none";
+      } else {
+        alert("Failed to save: " + (data.error || "Unknown error"));
+      }
+    } catch (err) {
+      console.error("Failed to save system prompt:", err);
+      alert("Failed to save system prompt. Check console for details.");
+    }
+  };
+}
+
+// Close modal on background click
+if (settingsModal) {
+  settingsModal.onclick = (e) => {
+    if (e.target === settingsModal) {
+      settingsModal.style.display = "none";
+    }
+  };
+}
+
+// --------------------------------------------------------------------
+// Health Check
+// --------------------------------------------------------------------
+let healthCheckInterval = null;
+let serverHealthy = false;
+
+async function checkServerHealth() {
+  try {
+    const response = await fetch(`${getApiUrl()}/api/health`, {
+      method: "GET",
+      headers: {
+        "ngrok-skip-browser-warning": "true"  // Bypass ngrok browser warning
+      },
+      signal: AbortSignal.timeout(5000) // 5 second timeout
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      serverHealthy = true;
+      
+      // Update status indicator
+      const statusEl = document.getElementById("status");
+      if (statusEl && !socket) {
+        statusEl.textContent = `Ready (${data.llm_provider}/${data.tts_engine})`;
+        statusEl.style.color = "#4caf50";
+      }
+      
+      return data;
+    } else {
+      throw new Error("Health check failed");
+    }
+  } catch (err) {
+    serverHealthy = false;
+    const statusEl = document.getElementById("status");
+    if (statusEl && !socket) {
+      statusEl.textContent = "Server unreachable";
+      statusEl.style.color = "#f44336";
+    }
+    console.error("Health check error:", err);
+    return null;
+  }
+}
+
+// Start health check polling
+function startHealthCheck() {
+  // Initial check
+  checkServerHealth();
+  
+  // Poll every 10 seconds
+  healthCheckInterval = setInterval(checkServerHealth, 10000);
+}
+
+// Stop health check polling
+function stopHealthCheck() {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
+}
+
+// Start health check on page load
+startHealthCheck();

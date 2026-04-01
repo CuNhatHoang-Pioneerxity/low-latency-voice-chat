@@ -164,6 +164,61 @@ async def favicon():
     """
     return FileResponse("static/favicon.ico")
 
+# --------------------------------------------------------------------
+# System Prompt Configuration API
+# --------------------------------------------------------------------
+@app.get("/api/health")
+async def health_check():
+    """
+    Health check endpoint to verify server is running.
+    Returns basic status info.
+    """
+    return {
+        "status": "healthy",
+        "tts_engine": app.state.SpeechPipelineManager.tts_engine,
+        "llm_provider": app.state.SpeechPipelineManager.llm_provider,
+        "llm_model": app.state.SpeechPipelineManager.llm_model
+    }
+
+@app.get("/api/system-prompt")
+async def get_system_prompt():
+    """
+    Returns the current system prompt.
+    """
+    return {"system_prompt": app.state.SpeechPipelineManager.system_prompt}
+
+@app.post("/api/system-prompt")
+async def set_system_prompt(request: dict):
+    """
+    Updates the system prompt at runtime.
+    
+    Args:
+        request: JSON body with "system_prompt" field
+        
+    Returns:
+        Success confirmation with the new prompt
+    """
+    new_prompt = request.get("system_prompt", "").strip()
+    if not new_prompt:
+        return {"error": "system_prompt cannot be empty"}, 400
+    
+    # Update in SpeechPipelineManager
+    app.state.SpeechPipelineManager.system_prompt = new_prompt
+    
+    # Update in LLM instance
+    app.state.SpeechPipelineManager.llm.system_prompt = new_prompt
+    app.state.SpeechPipelineManager.llm.system_prompt_message = {"role": "system", "content": new_prompt}
+    
+    # Save to file for persistence
+    try:
+        with open("system_prompt.txt", "w", encoding="utf-8") as f:
+            f.write(new_prompt)
+        logger.info(f"🖥️📝 System prompt updated and saved to file.")
+    except Exception as e:
+        logger.warning(f"🖥️⚠️ Could not save system prompt to file: {e}")
+    
+    return {"success": True, "system_prompt": new_prompt}
+
 @app.get("/")
 async def get_index() -> HTMLResponse:
     """
