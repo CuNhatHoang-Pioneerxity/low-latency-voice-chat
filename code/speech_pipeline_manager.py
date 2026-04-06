@@ -147,11 +147,12 @@ class SpeechPipelineManager:
         self.no_think = no_think
         self.orpheus_model = orpheus_model
 
-        # Store base system prompt and build effective prompt based on TTS engine
+        # Store base system prompt (from file, never modified)
         self.base_system_prompt = system_prompt
-        self.system_prompt = self._build_system_prompt(system_prompt, tts_engine)
-        if tts_engine == "orpheus":
-            self.system_prompt += f"\n{orpheus_prompt_addon}"
+        # Session override (set by user via API, cleared on session end)
+        self.session_system_prompt: Optional[str] = None
+        # Build effective prompt based on TTS engine and session override
+        self.system_prompt = self._build_effective_prompt(tts_engine)
 
         # --- Instance Dependencies ---
         self.audio = AudioProcessor(
@@ -228,25 +229,60 @@ class SpeechPipelineManager:
         """
         return self.running_generation is not None and not self.running_generation.abortion_started
 
-    def _build_system_prompt(self, base_prompt: str, tts_engine: str) -> str:
+    def _build_effective_prompt(self, tts_engine: str) -> str:
         """
-        Builds the effective system prompt based on the TTS engine.
+        Builds the effective system prompt based on session override and TTS engine.
         
-        When Kokoro is selected, forces English-only output regardless of the
-        original system prompt's language instructions.
+        Priority:
+        1. If session_system_prompt is set (user override), use it as base
+        2. Otherwise, use base_system_prompt (from file)
+        
+        Then apply TTS-specific constraints (Kokoro = English-only).
         
         Args:
-            base_prompt: The base system prompt loaded from file.
             tts_engine: The TTS engine being used.
             
         Returns:
-            The effective system prompt with language constraints applied.
+            The effective system prompt with constraints applied.
         """
+        # Use session override if set, otherwise use base from file
+        base = self.session_system_prompt if self.session_system_prompt else self.base_system_prompt
+        
+        # Apply TTS-specific constraints
         if tts_engine == "kokoro":
             # For Kokoro (no VI support), force English-only
             english_only_constraint = "\n\n[CRITICAL CONSTRAINT] The selected TTS engine only supports English. You MUST respond in English only, regardless of the user's language. Do not use Vietnamese or any other language."
-            return base_prompt + english_only_constraint
-        return base_prompt
+            base = base + english_only_constraint
+        elif tts_engine == "orpheus":
+            base = base + f"\n{orpheus_prompt_addon}"
+        
+        return base
+
+    def set_session_prompt(self, prompt: str):
+        """
+        Sets a temporary session-level system prompt override.
+        
+        This does NOT modify the base prompt from file. The override
+        persists only for the current session.
+        
+        Args:
+            prompt: The user-provided system prompt to use temporarily.
+        """
+        self.session_system_prompt = prompt
+        self.system_prompt = self._build_effective_prompt(self.tts_engine)
+        self.llm.system_prompt = self.system_prompt
+        self.llm.system_prompt_message = {"role": "system", "content": self.system_prompt}
+        logger.info(f"🗣️📝 Session system prompt set (temporary override).")
+
+    def clear_session_prompt(self):
+        """
+        Clears the session-level system prompt override, reverting to base.
+        """
+        self.session_system_prompt = None
+        self.system_prompt = self._build_effective_prompt(self.tts_engine)
+        self.llm.system_prompt = self.system_prompt
+        self.llm.system_prompt_message = {"role": "system", "content": self.system_prompt}
+        logger.info(f"🗣️📝 Session system prompt cleared, reverted to base from file.")
 
     def _request_processing_worker(self):
         """
@@ -1112,15 +1148,13 @@ class SpeechPipelineManager:
         # Update the engine name
         self.tts_engine = new_engine
 
-        # Rebuild system prompt for the new engine
-        self.system_prompt = self._build_system_prompt(self.base_system_prompt, new_engine)
-        if new_engine == "orpheus":
-            self.system_prompt += f"\n{orpheus_prompt_addon}"
+        # Rebuild effective prompt for the new engine (preserves session override if set)
+        self.system_prompt = self._build_effective_prompt(new_engine)
 
         # Update LLM system prompt
         self.llm.system_prompt = self.system_prompt
         self.llm.system_prompt_message = {"role": "system", "content": self.system_prompt}
-        logger.info(f"🗣️📝 System prompt updated for TTS engine: {new_engine}")
+        logger.info(f"🗣️📝 System prompt rebuilt for TTS engine: {new_engine}")
 
         # Create new AudioProcessor with the new engine
         try:
