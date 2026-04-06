@@ -31,6 +31,7 @@ USE_SSL = False
 TTS_START_ENGINE = "kokoro"
 # TTS_START_ENGINE = "orpheus"
 # TTS_START_ENGINE = "coqui"  # requires DeepSpeed
+# TTS_START_ENGINE = "openai"  # requires OPENAI_API_KEY env var
 TTS_ORPHEUS_MODEL = "Orpheus_3B-1BaseGGUF/mOrpheus_3B-1Base_Q4_K_M.gguf"
 TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
@@ -124,7 +125,8 @@ async def lifespan(app: FastAPI):
         orpheus_model=TTS_ORPHEUS_MODEL,
     )
 
-    app.state.Upsampler = UpsampleOverlap()
+    # Determine input sample rate for upsampler (all engines output 24kHz)
+    app.state.Upsampler = UpsampleOverlap(input_sample_rate=24000)
     app.state.AudioInputProcessor = AudioInputProcessor(
         LANGUAGE,
         is_orpheus=TTS_START_ENGINE=="orpheus",
@@ -218,6 +220,51 @@ async def set_system_prompt(request: dict):
         logger.warning(f"🖥️⚠️ Could not save system prompt to file: {e}")
     
     return {"success": True, "system_prompt": new_prompt}
+
+# --------------------------------------------------------------------
+# TTS Engine Configuration API
+# --------------------------------------------------------------------
+@app.get("/api/tts-engine")
+async def get_tts_engine():
+    """
+    Returns the current TTS engine.
+    """
+    return {"tts_engine": app.state.SpeechPipelineManager.tts_engine}
+
+@app.post("/api/tts-engine")
+async def set_tts_engine(request: dict):
+    """
+    Updates the TTS engine at runtime.
+    
+    Args:
+        request: JSON body with "tts_engine" field ("openai" or "kokoro")
+        
+    Returns:
+        Success confirmation with the new TTS engine
+    """
+    new_engine = request.get("tts_engine", "").strip().lower()
+    valid_engines = ["openai", "kokoro"]
+    
+    if not new_engine:
+        return {"error": "tts_engine cannot be empty"}, 400
+    
+    if new_engine not in valid_engines:
+        return {"error": f"Invalid tts_engine. Must be one of: {', '.join(valid_engines)}"}, 400
+    
+    # Check if engine is actually changing
+    if new_engine == app.state.SpeechPipelineManager.tts_engine:
+        return {"success": True, "tts_engine": new_engine, "message": "TTS engine unchanged"}
+    
+    try:
+        # Update TTS engine in SpeechPipelineManager
+        # This will reinitialize the AudioProcessor with the new engine
+        app.state.SpeechPipelineManager.set_tts_engine(new_engine)
+        
+        logger.info(f"🖥️🔊 TTS engine updated to: {new_engine}")
+        return {"success": True, "tts_engine": new_engine}
+    except Exception as e:
+        logger.error(f"🖥️💥 Failed to update TTS engine: {e}")
+        return {"error": f"Failed to update TTS engine: {str(e)}"}, 500
 
 @app.get("/")
 async def get_index() -> HTMLResponse:

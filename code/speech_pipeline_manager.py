@@ -147,7 +147,9 @@ class SpeechPipelineManager:
         self.no_think = no_think
         self.orpheus_model = orpheus_model
 
-        self.system_prompt = system_prompt
+        # Store base system prompt and build effective prompt based on TTS engine
+        self.base_system_prompt = system_prompt
+        self.system_prompt = self._build_system_prompt(system_prompt, tts_engine)
         if tts_engine == "orpheus":
             self.system_prompt += f"\n{orpheus_prompt_addon}"
 
@@ -225,6 +227,26 @@ class SpeechPipelineManager:
             False otherwise.
         """
         return self.running_generation is not None and not self.running_generation.abortion_started
+
+    def _build_system_prompt(self, base_prompt: str, tts_engine: str) -> str:
+        """
+        Builds the effective system prompt based on the TTS engine.
+        
+        When Kokoro is selected, forces English-only output regardless of the
+        original system prompt's language instructions.
+        
+        Args:
+            base_prompt: The base system prompt loaded from file.
+            tts_engine: The TTS engine being used.
+            
+        Returns:
+            The effective system prompt with language constraints applied.
+        """
+        if tts_engine == "kokoro":
+            # For Kokoro (no VI support), force English-only
+            english_only_constraint = "\n\n[CRITICAL CONSTRAINT] The selected TTS engine only supports English. You MUST respond in English only, regardless of the user's language. Do not use Vietnamese or any other language."
+            return base_prompt + english_only_constraint
+        return base_prompt
 
     def _request_processing_worker(self):
         """
@@ -1055,6 +1077,63 @@ class SpeechPipelineManager:
         self.abort_generation(wait_for_completion=True, timeout=7.0, reason="reset") # Ensure clean slate
         self.history = []
         logger.info("🗣️🧹 History cleared. Reset complete.")
+
+    def set_tts_engine(self, new_engine: str):
+        """
+        Changes the TTS engine at runtime by reinitializing the AudioProcessor.
+
+        1. Aborts any active generation.
+        2. Shuts down the current AudioProcessor.
+        3. Creates a new AudioProcessor with the specified engine.
+        4. Updates the tts_engine attribute and system prompt.
+        5. Updates the LLM with the new system prompt.
+
+        Args:
+            new_engine: The TTS engine to switch to ("openai" or "kokoro").
+
+        Raises:
+            RuntimeError: If the AudioProcessor fails to initialize with the new engine.
+        """
+        logger.info(f"🗣️🔄 Changing TTS engine from '{self.tts_engine}' to '{new_engine}'...")
+
+        # Abort any active generation first
+        if self.running_generation and not self.running_generation.abortion_started:
+            logger.info("🗣️🔄🛑 Aborting active generation before TTS engine change...")
+            self.abort_generation(wait_for_completion=True, timeout=5.0, reason="tts_engine_change")
+
+        # Shut down the current AudioProcessor if it has a shutdown method
+        if hasattr(self.audio, 'shutdown'):
+            logger.info("🗣️🔌 Shutting down current AudioProcessor...")
+            try:
+                self.audio.shutdown()
+            except Exception as e:
+                logger.warning(f"🗣️⚠️ Error shutting down AudioProcessor: {e}")
+
+        # Update the engine name
+        self.tts_engine = new_engine
+
+        # Rebuild system prompt for the new engine
+        self.system_prompt = self._build_system_prompt(self.base_system_prompt, new_engine)
+        if new_engine == "orpheus":
+            self.system_prompt += f"\n{orpheus_prompt_addon}"
+
+        # Update LLM system prompt
+        self.llm.system_prompt = self.system_prompt
+        self.llm.system_prompt_message = {"role": "system", "content": self.system_prompt}
+        logger.info(f"🗣️📝 System prompt updated for TTS engine: {new_engine}")
+
+        # Create new AudioProcessor with the new engine
+        try:
+            logger.info(f"🗣️🔊 Initializing new AudioProcessor with engine: {new_engine}")
+            self.audio = AudioProcessor(
+                engine=self.tts_engine,
+                orpheus_model=self.orpheus_model
+            )
+            self.audio.on_first_audio_chunk_synthesize = self.on_first_audio_chunk_synthesize
+            logger.info(f"🗣️✅ TTS engine successfully changed to: {new_engine}")
+        except Exception as e:
+            logger.error(f"🗣️💥 Failed to initialize AudioProcessor with engine '{new_engine}': {e}")
+            raise RuntimeError(f"Failed to switch to TTS engine '{new_engine}': {e}")
 
     def shutdown(self):
         """

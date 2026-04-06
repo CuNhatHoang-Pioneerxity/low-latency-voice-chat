@@ -7,19 +7,21 @@ class UpsampleOverlap:
     """
     Manages chunk-wise audio upsampling with overlap handling.
 
-    This class processes sequential audio chunks, upsamples them from 24kHz to 48kHz
-    using `scipy.signal.resample_poly`, and manages overlap between chunks to
-    mitigate boundary artifacts. The processed, upsampled audio segments are
-    returned as Base64 encoded strings. It maintains internal state to handle
-    the overlap correctly across calls.
+    This class processes sequential audio chunks, upsamples them from the input
+    sample rate to 48kHz using `scipy.signal.resample_poly`, and manages overlap
+    between chunks to mitigate boundary artifacts. The processed, upsampled audio
+    segments are returned as Base64 encoded strings. It maintains internal state
+    to handle the overlap correctly across calls.
     """
-    def __init__(self):
+    def __init__(self, input_sample_rate: int = 24000):
         """
         Initializes the UpsampleOverlap processor.
 
-        Sets up the internal state required for tracking previous audio chunks
-        and their resampled versions to handle overlaps during processing.
+        Args:
+            input_sample_rate: The sample rate of input audio (default 24000).
+                               OpenAI TTS uses 22050, other engines use 24000.
         """
+        self.input_sample_rate = input_sample_rate
         self.previous_chunk: Optional[np.ndarray] = None
         self.resampled_previous_chunk: Optional[np.ndarray] = None
 
@@ -51,7 +53,7 @@ class UpsampleOverlap:
         audio_float = audio_int16.astype(np.float32) / 32768.0
 
         # Upsample the current chunk independently first, needed for state and first chunk logic
-        upsampled_current_chunk = resample_poly(audio_float, 48000, 24000)
+        upsampled_current_chunk = resample_poly(audio_float, 48000, self.input_sample_rate)
 
         if self.previous_chunk is None:
             # First chunk: Output the first half of its upsampled version
@@ -61,7 +63,7 @@ class UpsampleOverlap:
             # Subsequent chunks: Combine previous float chunk with current float chunk
             combined = np.concatenate((self.previous_chunk, audio_float))
             # Upsample the combined chunk
-            up = resample_poly(combined, 48000, 24000)
+            up = resample_poly(combined, 48000, self.input_sample_rate)
 
             # Calculate lengths and indices for extracting the middle part
             # Ensure self.resampled_previous_chunk is not None (shouldn't happen here due to outer if)

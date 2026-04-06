@@ -11,8 +11,8 @@ from typing import Callable, Generator, Optional
 import numpy as np
 from huggingface_hub import hf_hub_download
 # Assuming RealtimeTTS is installed and available
-from RealtimeTTS import (CoquiEngine, KokoroEngine, OrpheusEngine,
-                         OrpheusVoice, TextToAudioStream)
+from RealtimeTTS import (CoquiEngine, KokoroEngine, OpenAIEngine,
+                         OrpheusEngine, OrpheusVoice, TextToAudioStream)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ ENGINE_SILENCES = {
     "coqui":   Silence(comma=0.3, sentence=0.6, default=0.3),
     "kokoro":  Silence(comma=0.3, sentence=0.6, default=0.3),
     "orpheus": Silence(comma=0.3, sentence=0.6, default=0.3),
+    "openai":  Silence(comma=0.3, sentence=0.6, default=0.3),
 }
 # Stream chunk sizes influence latency vs. throughput trade-offs
 QUICK_ANSWER_STREAM_CHUNK_SIZE = 8
@@ -139,6 +140,14 @@ class AudioProcessor:
             )
             voice = OrpheusVoice("tara")
             self.engine.set_voice(voice)
+        elif engine == "openai":
+            self.engine = OpenAIEngine(
+                model="gpt-4o-mini-tts",
+                voice="echo",
+                speed=1.25,
+                response_format="pcm",
+                instructions="",
+            )
         else:
             raise ValueError(f"Unsupported engine: {engine}")
 

@@ -380,6 +380,7 @@ renderMessages();
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsModal = document.getElementById("settingsModal");
 const systemPromptInput = document.getElementById("systemPromptInput");
+const ttsEngineSelect = document.getElementById("ttsEngineSelect");
 const cancelSettingsBtn = document.getElementById("cancelSettingsBtn");
 const saveSettingsBtn = document.getElementById("saveSettingsBtn");
 
@@ -395,14 +396,23 @@ function getApiUrl() {
 if (settingsBtn) {
   settingsBtn.onclick = async () => {
     try {
-      const response = await fetch(`${getApiUrl()}/api/system-prompt`, {
+      // Load system prompt
+      const promptResponse = await fetch(`${getApiUrl()}/api/system-prompt`, {
         headers: { "ngrok-skip-browser-warning": "true" }
       });
-      const data = await response.json();
-      systemPromptInput.value = data.system_prompt || "";
+      const promptData = await promptResponse.json();
+      systemPromptInput.value = promptData.system_prompt || "";
+
+      // Load TTS engine
+      const ttsResponse = await fetch(`${getApiUrl()}/api/tts-engine`, {
+        headers: { "ngrok-skip-browser-warning": "true" }
+      });
+      const ttsData = await ttsResponse.json();
+      ttsEngineSelect.value = ttsData.tts_engine || "openai";
     } catch (err) {
-      console.error("Failed to load system prompt:", err);
+      console.error("Failed to load settings:", err);
       systemPromptInput.value = "";
+      ttsEngineSelect.value = "openai";
     }
     settingsModal.style.display = "flex";
   };
@@ -415,35 +425,55 @@ if (cancelSettingsBtn) {
   };
 }
 
-// Save system prompt
+// Save settings
 if (saveSettingsBtn) {
   saveSettingsBtn.onclick = async () => {
     const newPrompt = systemPromptInput.value.trim();
+    const newTtsEngine = ttsEngineSelect.value;
+
     if (!newPrompt) {
       alert("System prompt cannot be empty.");
       return;
     }
-    
+
     try {
-      const response = await fetch(`${getApiUrl()}/api/system-prompt`, {
+      // Save system prompt
+      const promptResponse = await fetch(`${getApiUrl()}/api/system-prompt`, {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
           "ngrok-skip-browser-warning": "true"
         },
         body: JSON.stringify({ system_prompt: newPrompt })
       });
-      const data = await response.json();
-      
-      if (data.success) {
-        console.log("System prompt updated successfully");
-        settingsModal.style.display = "none";
-      } else {
-        alert("Failed to save: " + (data.error || "Unknown error"));
+      const promptData = await promptResponse.json();
+
+      if (!promptData.success) {
+        alert("Failed to save system prompt: " + (promptData.error || "Unknown error"));
+        return;
       }
+
+      // Save TTS engine
+      const ttsResponse = await fetch(`${getApiUrl()}/api/tts-engine`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true"
+        },
+        body: JSON.stringify({ tts_engine: newTtsEngine })
+      });
+      const ttsData = await ttsResponse.json();
+
+      if (!ttsData.success) {
+        alert("Failed to save TTS engine: " + (ttsData.error || "Unknown error"));
+        return;
+      }
+
+      console.log("Settings updated successfully");
+      settingsModal.style.display = "none";
     } catch (err) {
-      console.error("Failed to save system prompt:", err);
-      alert("Failed to save system prompt. Check console for details.");
+      console.error("Failed to save settings:", err);
+      alert("Failed to save settings. Check console for details.");
     }
   };
 }

@@ -300,6 +300,15 @@
     <div style="background:#fff; border-radius:12px; padding:24px; max-width:500px; width:90%; max-height:80vh; overflow-y:auto;">
       <h3 style="margin:0 0 16px 0; color:#2c3e50;">System Prompt Configuration</h3>
       <textarea id="systemPromptInput" style="width:100%; height:200px; border:1px solid #ddd; border-radius:8px; padding:12px; font-family:inherit; font-size:14px; resize:vertical;" placeholder="Enter system prompt..."></textarea>
+
+      <div style="margin-top:16px;">
+        <label for="ttsEngineSelect" style="display:block; font-weight:500; color:#2c3e50; margin-bottom:8px;">TTS Engine</label>
+        <select id="ttsEngineSelect" style="width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:8px; font-family:inherit; font-size:14px; background:#fff;">
+          <option value="openai">OpenAI</option>
+          <option value="kokoro">Kokoro</option>
+        </select>
+      </div>
+
       <div style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">
         <button id="cancelSettingsBtn" class="btn" style="background-color:#6c757d;">Cancel</button>
         <button id="saveSettingsBtn" class="btn start-btn">Save</button>
