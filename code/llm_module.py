@@ -59,6 +59,8 @@ except ImportError:
     logger.debug("🤖💥 Error importing dotenv, skipping .env load.")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
+XAI_BASE_URL = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
 
@@ -190,7 +192,7 @@ class LLM:
     Handles client initialization, streaming generation, request cancellation,
     system prompts, and basic connection management including an optional `ollama ps` check.
     """
-    SUPPORTED_BACKENDS = ["ollama", "openai", "lmstudio"]
+    SUPPORTED_BACKENDS = ["ollama", "openai", "lmstudio", "xai"]
 
     def __init__(
         self,
@@ -223,8 +225,8 @@ class LLM:
 
         if self.backend == "ollama" and not REQUESTS_AVAILABLE:
              raise ImportError("requests library is required for the 'ollama' backend but not installed.")
-        if self.backend in ["openai", "lmstudio"] and not OPENAI_AVAILABLE:
-             raise ImportError("openai library is required for the 'openai'/'lmstudio' backends but not installed.")
+        if self.backend in ["openai", "lmstudio", "xai"] and not OPENAI_AVAILABLE:
+             raise ImportError("openai library is required for the 'openai'/'lmstudio'/'xai' backends but not installed.")
 
         self.model = model
         self.system_prompt = system_prompt
@@ -243,6 +245,8 @@ class LLM:
         logger.info(f"🤖⚙️ Configuring LLM instance: backend='{self.backend}', model='{self.model}'")
 
         self.effective_openai_key = self._api_key or OPENAI_API_KEY
+        self.effective_xai_key = self._api_key or XAI_API_KEY if self.backend == "xai" else None
+        self.effective_xai_url = self._base_url or XAI_BASE_URL if self.backend == "xai" else None
         self.effective_ollama_url = self._base_url or OLLAMA_BASE_URL if self.backend == "ollama" else None
         self.effective_lmstudio_url = self._base_url or LMSTUDIO_BASE_URL if self.backend == "lmstudio" else None
         self.effective_openai_base_url = self._base_url if self.backend == "openai" and self._base_url else None
@@ -277,13 +281,13 @@ class LLM:
             False otherwise.
         """
         if self._client_initialized:
-            if self.backend in ["openai", "lmstudio"]: return self.client is not None
+            if self.backend in ["openai", "lmstudio", "xai"]: return self.client is not None
             if self.backend == "ollama": return self.ollama_session is not None and self._ollama_connection_ok # Check flag
             return False
 
         with self._client_init_lock:
             if self._client_initialized: # Double check
-                if self.backend in ["openai", "lmstudio"]: return self.client is not None
+                if self.backend in ["openai", "lmstudio", "xai"]: return self.client is not None
                 if self.backend == "ollama": return self.ollama_session is not None and self._ollama_connection_ok
                 return False
 
@@ -294,6 +298,9 @@ class LLM:
             try:
                 if self.backend == "openai":
                     self.client = _create_openai_client(self.effective_openai_key, base_url=self.effective_openai_base_url)
+                    init_ok = self.client is not None
+                elif self.backend == "xai":
+                    self.client = _create_openai_client(self.effective_xai_key, base_url=self.effective_xai_url)
                     init_ok = self.client is not None
                 elif self.backend == "lmstudio":
                     self.client = _create_openai_client(api_key="lmstudio-key", base_url=self.effective_lmstudio_url)
@@ -547,22 +554,21 @@ class LLM:
                 return True
 
             except (APIConnectionError, requests.exceptions.ConnectionError, ConnectionError, TimeoutError, APITimeoutError, requests.exceptions.Timeout) as e:
-                last_error = e
-                logger.warning(f"🤖🔥⚠️ Prewarm attempt {attempts + 1}/{max_retries+1} connection/timeout error during generation: {e}")
-                if attempts < max_retries:
-                    attempts += 1
-                    wait_time = 2 * attempts
-                    logger.info(f"🤖🔥🔄 Retrying prewarm generation in {wait_time}s...")
-                    time.sleep(wait_time)
-                    # Force re-check on next attempt via lazy_init in generate()
-                    # Crucially, setting this False forces _lazy_initialize_clients to run again
-                    # which will re-attempt the connection check AND the `ollama ps` fallback if needed.
-                    self._client_initialized = False
-                    logger.debug("🤖🔥🔄 Resetting client initialized flag to force re-check on retry.")
-                    continue
-                else:
-                    logger.error(f"🤖🔥💥 Prewarm failed permanently after {attempts + 1} generation attempts due to connection issues.")
-                    return False
+                 logger.warning(f"🤖🔥⚠️ Prewarm attempt {attempts + 1}/{max_retries+1} connection/timeout error during generation: {e}")
+                 if attempts < max_retries:
+                     attempts += 1
+                     wait_time = 2 * attempts
+                     logger.info(f"🤖🔥🔄 Retrying prewarm generation in {wait_time}s...")
+                     time.sleep(wait_time)
+                     # Force re-check on next attempt via lazy_init in generate()
+                     # Crucially, setting this False forces _lazy_initialize_clients to run again
+                     # which will re-attempt the connection check AND the `ollama ps` fallback if needed.
+                     self._client_initialized = False
+                     logger.debug("🤖🔥🔄 Resetting client initialized flag to force re-check on retry.")
+                     continue
+                 else:
+                     logger.error(f"🤖🔥💥 Prewarm failed permanently after {attempts + 1} generation attempts due to connection issues.")
+                     return False
             except (APIError, RateLimitError, requests.exceptions.RequestException, RuntimeError) as e:
                 last_error = e
                 logger.error(f"🤖🔥💥 Prewarm attempt {attempts + 1}/{max_retries+1} API/Request/Runtime error: {e}")
@@ -665,6 +671,21 @@ class LLM:
                 )
                 stream_object_to_register = stream_iterator # The Stream object itself
                 self._register_request(req_id, "openai", stream_object_to_register)
+                yield from self._yield_openai_chunks(stream_iterator, req_id)
+
+            elif self.backend == "xai":
+                if self.client is None:
+                    raise RuntimeError("xAI client not initialized (should have been caught by lazy_init).")
+                if 'temperature' not in kwargs:
+                    kwargs['temperature'] = 0.7
+                payload = { "model": self.model, "messages": messages, "stream": True, **kwargs }
+                logger.info(f"🤖💬 [{req_id}] Sending xAI request with payload:")
+                logger.info(f"{json.dumps(payload, indent=2)}")
+                stream_iterator = self.client.chat.completions.create(
+                    model=self.model, messages=messages, stream=True, **kwargs
+                )
+                stream_object_to_register = stream_iterator # The Stream object itself
+                self._register_request(req_id, "xai", stream_object_to_register)
                 yield from self._yield_openai_chunks(stream_iterator, req_id)
 
             elif self.backend == "lmstudio":
