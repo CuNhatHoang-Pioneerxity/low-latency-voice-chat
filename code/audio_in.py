@@ -3,7 +3,7 @@ import logging
 from typing import Optional, Callable
 import numpy as np
 from scipy.signal import resample_poly
-from transcribe import TranscriptionProcessor
+from deepgram_stt import DeepgramTranscriptionProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class AudioInputProcessor:
 
     def __init__(
             self,
-            language: str = "en",
+            language: str = "vi",
             is_orpheus: bool = False,
             silence_active_callback: Optional[Callable[[bool], None]] = None,
             pipeline_latency: float = 0.5,
@@ -37,25 +37,31 @@ class AudioInputProcessor:
                                      It receives a boolean argument (True if silence is active).
             pipeline_latency: Estimated latency of the processing pipeline in seconds.
         """
+        self.realtime_callback: Optional[Callable[[str], None]] = None
+        self.recording_start_callback: Optional[Callable[[None], None]] = None # Type adjusted
+        self.silence_active_callback: Optional[Callable[[bool], None]] = silence_active_callback
+        self.interrupted = False # TODO: Consider renaming or clarifying usage (interrupted by user speech?)
         self.last_partial_text: Optional[str] = None
-        self.transcriber = TranscriptionProcessor(
-            language,
+
+        # Create callback for partial transcription
+        def partial_transcript_callback(text: str) -> None:
+            """Handles partial transcription results from the transcriber."""
+            if text != self.last_partial_text:
+                self.last_partial_text = text
+                if self.realtime_callback:
+                    self.realtime_callback(text)
+
+        self.transcriber = DeepgramTranscriptionProcessor(
+            source_language=language,
+            realtime_transcription_callback=partial_transcript_callback,
             on_recording_start_callback=self._on_recording_start,
             silence_active_callback=self._silence_active_callback,
-            is_orpheus=is_orpheus,
             pipeline_latency=pipeline_latency,
         )
         # Flag to indicate if the transcription loop has failed fatally
         self._transcription_failed = False
         self.transcription_task = asyncio.create_task(self._run_transcription_loop())
 
-
-        self.realtime_callback: Optional[Callable[[str], None]] = None
-        self.recording_start_callback: Optional[Callable[[None], None]] = None # Type adjusted
-        self.silence_active_callback: Optional[Callable[[bool], None]] = silence_active_callback
-        self.interrupted = False # TODO: Consider renaming or clarifying usage (interrupted by user speech?)
-
-        self._setup_callbacks()
         logger.info("👂🚀 AudioInputProcessor initialized.")
 
     def _silence_active_callback(self, is_active: bool) -> None:
@@ -72,17 +78,6 @@ class AudioInputProcessor:
         """Signals the underlying transcriber to abort any ongoing generation process."""
         logger.info("👂🛑 Aborting generation requested.")
         self.transcriber.abort_generation()
-
-    def _setup_callbacks(self) -> None:
-        """Sets up internal callbacks for the TranscriptionProcessor instance."""
-        def partial_transcript_callback(text: str) -> None:
-            """Handles partial transcription results from the transcriber."""
-            if text != self.last_partial_text:
-                self.last_partial_text = text
-                if self.realtime_callback:
-                    self.realtime_callback(text)
-
-        self.transcriber.realtime_transcription_callback = partial_transcript_callback
 
     async def _run_transcription_loop(self) -> None:
         """

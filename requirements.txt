@@ -1,5 +1,5 @@
 # speech to text and text to speech
-realtimestt==0.3.104
+deepgram-sdk>=3.0.0
 realtimetts[kokoro,coqui,orpheus,openai]==0.5.5
 
 # webserver dependencies
