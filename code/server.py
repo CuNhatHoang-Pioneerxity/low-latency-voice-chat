@@ -4,6 +4,11 @@ import logging
 from logsetup import setup_logging
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 if __name__ == "__main__":
     logger.info("🖥️👋 Welcome to local real-time voice chat")
 
@@ -28,7 +33,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, Response, FileResponse
 
 USE_SSL = False
-TTS_START_ENGINE = "kokoro"
+TTS_START_ENGINE = "xai"
+# TTS_START_ENGINE = "kokoro"
 # TTS_START_ENGINE = "orpheus"
 # TTS_START_ENGINE = "coqui"  # requires DeepSpeed
 # TTS_START_ENGINE = "openai"  # requires OPENAI_API_KEY env var

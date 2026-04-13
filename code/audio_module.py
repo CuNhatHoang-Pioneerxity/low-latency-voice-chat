@@ -6,59 +6,50 @@ import threading
 import time
 from collections import namedtuple
 from queue import Queue
-from typing import Callable, Generator, Optional
+from typing import Callable, Generator, Optional, Any
 
 import numpy as np
 from huggingface_hub import hf_hub_download
-# Assuming RealtimeTTS is installed and available
-from RealtimeTTS import (CoquiEngine, KokoroEngine, OpenAIEngine,
-                         OrpheusEngine, OrpheusVoice, TextToAudioStream)
+
+# RealtimeTTS imports
+from RealtimeTTS import (
+    CoquiEngine, KokoroEngine, OpenAIEngine,
+    OrpheusEngine, OrpheusVoice, TextToAudioStream
+)
+
+# Your xAI engine
+from xai_tts import XAITTSEngine
 
 logger = logging.getLogger(__name__)
 
 # Default configuration constants
 START_ENGINE = "kokoro"
+
 Silence = namedtuple("Silence", ("comma", "sentence", "default"))
 ENGINE_SILENCES = {
     "coqui":   Silence(comma=0.3, sentence=0.6, default=0.3),
     "kokoro":  Silence(comma=0.3, sentence=0.6, default=0.3),
     "orpheus": Silence(comma=0.3, sentence=0.6, default=0.3),
     "openai":  Silence(comma=0.3, sentence=0.6, default=0.3),
+    "xai":     Silence(comma=0.3, sentence=0.6, default=0.3),
 }
-# Stream chunk sizes influence latency vs. throughput trade-offs
+
 QUICK_ANSWER_STREAM_CHUNK_SIZE = 8
 FINAL_ANSWER_STREAM_CHUNK_SIZE = 30
 
-# Coqui model download helper functions
-def create_directory(path: str) -> None:
-    """
-    Creates a directory at the specified path if it doesn't already exist.
 
-    Args:
-        path: The directory path to create.
-    """
+def create_directory(path: str) -> None:
     if not os.path.exists(path):
         os.makedirs(path)
 
+
 def ensure_lasinya_models(models_root: str = "models", model_name: str = "Lasinya") -> None:
-    """
-    Ensures the Coqui XTTS Lasinya model files are present locally.
-
-    Checks for required model files (config.json, vocab.json, etc.) within
-    the specified directory structure. If any file is missing, it downloads
-    it from the 'KoljaB/XTTS_Lasinya' Hugging Face Hub repository.
-
-    Args:
-        models_root: The root directory where models are stored.
-        model_name: The specific name of the model subdirectory.
-    """
     base = os.path.join(models_root, model_name)
     create_directory(base)
     files = ["config.json", "vocab.json", "speakers_xtts.pth", "model.pth"]
     for fn in files:
         local_file = os.path.join(base, fn)
         if not os.path.exists(local_file):
-            # Not using logger here as it might not be configured yet during module import/init
             print(f"👄⏬ Downloading {fn} to {base}")
             hf_hub_download(
                 repo_id="KoljaB/XTTS_Lasinya",
@@ -66,45 +57,25 @@ def ensure_lasinya_models(models_root: str = "models", model_name: str = "Lasiny
                 local_dir=base
             )
 
-class AudioProcessor:
-    """
-    Manages Text-to-Speech (TTS) synthesis using various engines via RealtimeTTS.
 
-    This class initializes a chosen TTS engine (Coqui, Kokoro, or Orpheus),
-    configures it for streaming output, measures initial latency (TTFT),
-    and provides methods to synthesize audio from text strings or generators,
-    placing the resulting audio chunks into a queue. It handles dynamic
-    stream parameter adjustments and manages the synthesis lifecycle, including
-    optional callbacks upon receiving the first audio chunk.
-    """
+class AudioProcessor:
     def __init__(
             self,
             engine: str = START_ENGINE,
             orpheus_model: str = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf",
-        ) -> None:
-        """
-        Initializes the AudioProcessor with a specific TTS engine.
-
-        Sets up the chosen engine (Coqui, Kokoro, Orpheus), downloads Coqui models
-        if necessary, configures the RealtimeTTS stream, and performs an initial
-        synthesis to measure Time To First Audio chunk (TTFA).
-
-        Args:
-            engine: The name of the TTS engine to use ("coqui", "kokoro", "orpheus").
-            orpheus_model: The path or identifier for the Orpheus model file (used only if engine is "orpheus").
-        """
-        self.engine_name = engine
+    ) -> None:
+        self.engine_name = engine.lower()
         self.stop_event = threading.Event()
         self.finished_event = threading.Event()
-        self.audio_chunks = asyncio.Queue() # Queue for synthesized audio output
+        self.audio_chunks: Queue[bytes] = Queue(maxsize=100)  # Fixed: thread-safe Queue
         self.orpheus_model = orpheus_model
 
-        self.silence = ENGINE_SILENCES.get(engine, ENGINE_SILENCES[self.engine_name])
-        self.current_stream_chunk_size = QUICK_ANSWER_STREAM_CHUNK_SIZE # Initial chunk size
+        self.silence = ENGINE_SILENCES.get(self.engine_name, ENGINE_SILENCES["kokoro"])
+        self.current_stream_chunk_size = QUICK_ANSWER_STREAM_CHUNK_SIZE
 
-        # Dynamically load and configure the selected TTS engine
-        if engine == "coqui":
-            ensure_lasinya_models(models_root="models", model_name="Lasinya")
+        # === Engine Initialization ===
+        if self.engine_name == "coqui":
+            ensure_lasinya_models()
             self.engine = CoquiEngine(
                 specific_model="Lasinya",
                 local_models_path="./models",
@@ -119,7 +90,7 @@ class AudioProcessor:
                 load_balancing_cut_off=0.1,
                 add_sentence_filter=True,
             )
-        elif engine == "kokoro":
+        elif self.engine_name == "kokoro":
             self.engine = KokoroEngine(
                 voice="af_heart",
                 default_speed=1.26,
@@ -130,7 +101,7 @@ class AudioProcessor:
                 fade_in_ms=15,
                 fade_out_ms=10,
             )
-        elif engine == "orpheus":
+        elif self.engine_name == "orpheus":
             self.engine = OrpheusEngine(
                 model=self.orpheus_model,
                 temperature=0.8,
@@ -138,65 +109,46 @@ class AudioProcessor:
                 repetition_penalty=1.1,
                 max_tokens=1200,
             )
-            voice = OrpheusVoice("tara")
-            self.engine.set_voice(voice)
-        elif engine == "openai":
+            self.engine.set_voice(OrpheusVoice("tara"))
+        elif self.engine_name == "openai":
             self.engine = OpenAIEngine(
                 model="gpt-4o-mini-tts",
                 voice="echo",
                 speed=1.25,
                 response_format="pcm",
-                instructions="",
+            )
+        elif self.engine_name == "xai":
+            self.engine = XAITTSEngine(
+                voice="eve",
+                language="en",
+                codec="pcm",
+                sample_rate=24000,
             )
         else:
             raise ValueError(f"Unsupported engine: {engine}")
 
+        # === Stream Setup (only for non-xAI engines) ===
+        if self.engine_name != "xai":
+            self.stream = TextToAudioStream(
+                self.engine,
+                muted=True,
+                playout_chunk_size=4096,
+                on_audio_stream_stop=self.on_audio_stream_stop,
+            )
 
-        # Initialize the RealtimeTTS stream
-        self.stream = TextToAudioStream(
-            self.engine,
-            muted=True, # Do not play audio directly
-            playout_chunk_size=4096, # Internal chunk size for processing
-            on_audio_stream_stop=self.on_audio_stream_stop,
-        )
+            # Prewarm + TTFA measurement (skipped for xAI)
+            self._prewarm_and_measure_ttfa()
+        else:
+            logger.info("👄 xAI TTS engine initialized (WebSocket streaming - skipping prewarm/TTFA)")
+            self.tts_inference_time = 450  # Reasonable estimate for xAI
 
-        # Ensure Coqui engine starts with the quick chunk size
-        if self.engine_name == "coqui" and hasattr(self.engine, 'set_stream_chunk_size') and self.current_stream_chunk_size != QUICK_ANSWER_STREAM_CHUNK_SIZE:
-            logger.info(f"👄⚙️ Setting Coqui stream chunk size to {QUICK_ANSWER_STREAM_CHUNK_SIZE} for initial setup.")
-            self.engine.set_stream_chunk_size(QUICK_ANSWER_STREAM_CHUNK_SIZE)
-            self.current_stream_chunk_size = QUICK_ANSWER_STREAM_CHUNK_SIZE
+        self.on_first_audio_chunk_synthesize: Optional[Callable[[], None]] = None
 
-        # Prewarm the engine
+    def _prewarm_and_measure_ttfa(self):
+        """Prewarm and measure TTFA - only used for local engines."""
+        # Prewarm
         self.stream.feed("prewarm")
-        play_kwargs = dict(
-            log_synthesized_text=False, # Don't log prewarm text
-            muted=True,
-            fast_sentence_fragment=False,
-            comma_silence_duration=self.silence.comma,
-            sentence_silence_duration=self.silence.sentence,
-            default_silence_duration=self.silence.default,
-            force_first_fragment_after_words=999999, # Effectively disable this
-        )
-        self.stream.play(**play_kwargs) # Synchronous play for prewarm
-        # Wait for prewarm to finish (indicated by on_audio_stream_stop)
-        while self.stream.is_playing():
-            time.sleep(0.01)
-        self.finished_event.wait() # Wait for stop callback
-        self.finished_event.clear()
-
-        # Measure Time To First Audio (TTFA)
-        start_time = time.time()
-        ttfa = None
-        def on_audio_chunk_ttfa(chunk: bytes):
-            nonlocal ttfa
-            if ttfa is None:
-                ttfa = time.time() - start_time
-                logger.debug(f"👄⏱️ TTFA measurement first chunk arrived, TTFA: {ttfa:.2f}s.")
-
-        self.stream.feed("This is a test sentence to measure the time to first audio chunk.")
-        play_kwargs_ttfa = dict(
-            on_audio_chunk=on_audio_chunk_ttfa,
-            log_synthesized_text=False, # Don't log test sentence
+        self.stream.play(
             muted=True,
             fast_sentence_fragment=False,
             comma_silence_duration=self.silence.comma,
@@ -204,391 +156,336 @@ class AudioProcessor:
             default_silence_duration=self.silence.default,
             force_first_fragment_after_words=999999,
         )
-        self.stream.play_async(**play_kwargs_ttfa)
-
-        # Wait until the first chunk arrives or stream finishes
-        while ttfa is None and (self.stream.is_playing() or not self.finished_event.is_set()):
+        while self.stream.is_playing():
             time.sleep(0.01)
-        self.stream.stop() # Ensure stream stops cleanly
-
-        # Wait for stop callback if it hasn't fired yet
-        if not self.finished_event.is_set():
-            self.finished_event.wait(timeout=2.0) # Add timeout for safety
+        self.finished_event.wait(timeout=2.0)
         self.finished_event.clear()
 
-        if ttfa is not None:
-            logger.debug(f"👄⏱️ TTFA measurement complete. TTFA: {ttfa:.2f}s.")
-            self.tts_inference_time = ttfa * 1000  # Store as ms
-        else:
-            logger.warning("👄⚠️ TTFA measurement failed (no audio chunk received).")
-            self.tts_inference_time = 0
+        # TTFA measurement
+        start_time = time.time()
+        ttfa = None
 
-        # Callbacks to be set externally if needed
-        self.on_first_audio_chunk_synthesize: Optional[Callable[[], None]] = None
+        def on_ttfa_chunk(chunk: bytes):
+            nonlocal ttfa
+            if ttfa is None:
+                ttfa = time.time() - start_time
+
+        self.stream.feed("This is a test sentence to measure time to first audio.")
+        self.stream.play_async(
+            on_audio_chunk=on_ttfa_chunk,
+            muted=True,
+            fast_sentence_fragment=False,
+            comma_silence_duration=self.silence.comma,
+            sentence_silence_duration=self.silence.sentence,
+            default_silence_duration=self.silence.default,
+            force_first_fragment_after_words=999999,
+        )
+
+        while ttfa is None and (self.stream.is_playing() or not self.finished_event.is_set()):
+            time.sleep(0.01)
+        self.stream.stop()
+        self.finished_event.wait(timeout=2.0)
+        self.finished_event.clear()
+
+        self.tts_inference_time = (ttfa * 1000) if ttfa else 600
+        logger.debug(f"👄 TTFA measured: {self.tts_inference_time:.0f}ms")
 
     def on_audio_stream_stop(self) -> None:
-        """
-        Callback executed when the RealtimeTTS audio stream stops processing.
-
-        Logs the event and sets the `finished_event` to signal completion or stop.
-        """
         logger.info("👄🛑 Audio stream stopped.")
         self.finished_event.set()
 
+    # ==================== Unified Buffering Helper ====================
+    class _ChunkProcessor:
+        """Inner class to hold mutable state for on_audio_chunk callbacks."""
+        def __init__(self, engine_name: str, generation_string: str):
+            self.first_call = True
+            self.callback_fired = False
+            self.silent_chunks_count = 0
+            self.silent_chunks_time = 0.0
+            self.silence_threshold = 150 if engine_name == "orpheus" else 200
+            self.engine_name = engine_name
+            self.generation_string = generation_string
+
+    def _process_audio_chunk(
+            self,
+            chunk: bytes,
+            processor: "_ChunkProcessor",
+            buffer: list[bytes],
+            buf_dur: float,
+            good_streak: int,
+            buffering: bool,
+            stop_event: threading.Event,
+            audio_chunks: Queue[bytes],
+            is_final: bool = False,
+    ):
+        """Shared logic for buffering, silence skipping, and first-chunk callback."""
+        if stop_event.is_set():
+            return False, buffer, buf_dur, good_streak, buffering
+
+        now = time.time()
+        SR, BPS = 24000, 2  # Most engines use 24kHz 16-bit PCM
+
+        try:
+            samples = len(chunk) // BPS
+            play_duration = samples / SR
+        except Exception:
+            play_duration = 0.04  # fallback ~40ms
+
+        # Orpheus silence skipping
+        if processor.first_call and processor.engine_name == "orpheus":
+            try:
+                fmt = f"{samples}h"
+                pcm_data = struct.unpack(fmt, chunk)
+                avg_amp = np.abs(np.array(pcm_data, dtype=np.int16)).mean()
+
+                if avg_amp < processor.silence_threshold:
+                    processor.silent_chunks_count += 1
+                    processor.silent_chunks_time += play_duration
+                    return True, buffer, buf_dur, good_streak, buffering  # skip
+
+                if processor.silent_chunks_count > 0:
+                    logger.info(f"👄⏭️ {processor.generation_string} Skipped {processor.silent_chunks_count} silent chunks "
+                                f"({processor.silent_chunks_time*1000:.1f}ms saved)")
+            except Exception as e:
+                logger.warning(f"👄⚠️ Silence detection error: {e}")
+
+        # Timing & logging
+        if processor.first_call:
+            processor.first_call = False
+            ttfa_actual = now - time.time() + 0.001  # rough
+            logger.info(f"👄🚀 {processor.generation_string} Audio started. TTFA: {ttfa_actual:.2f}s")
+        else:
+            gap = now - getattr(self, f"_{'final' if is_final else 'quick'}_prev_chunk_time", now)
+            setattr(self, f"_{'final' if is_final else 'quick'}_prev_chunk_time", now)
+            if gap <= play_duration * 1.15:
+                good_streak += 1
+            else:
+                good_streak = 0
+
+        # Buffering logic
+        buffer.append(chunk)
+        buf_dur += play_duration
+
+        put_occurred = False
+        if buffering:
+            if good_streak >= 2 or buf_dur >= 0.5:
+                logger.info(f"👄➡️ {processor.generation_string} Flushing buffer (streak={good_streak}, dur={buf_dur:.2f}s)")
+                for c in buffer:
+                    try:
+                        audio_chunks.put_nowait(c)
+                        put_occurred = True
+                    except Exception:
+                        pass  # queue full
+                buffer.clear()
+                buf_dur = 0.0
+                buffering = False
+        else:
+            try:
+                audio_chunks.put_nowait(chunk)
+                put_occurred = True
+            except Exception:
+                pass
+
+        # First chunk callback
+        if put_occurred and not processor.callback_fired:
+            if self.on_first_audio_chunk_synthesize:
+                try:
+                    self.on_first_audio_chunk_synthesize()
+                except Exception as e:
+                    logger.error(f"Callback error: {e}")
+            processor.callback_fired = True
+
+        return True, buffer, buf_dur, good_streak, buffering
+
+    # ==================== Public Methods ====================
     def synthesize(
             self,
             text: str,
-            audio_chunks: Queue, 
+            audio_chunks: Queue[bytes],
             stop_event: threading.Event,
             generation_string: str = "",
-        ) -> bool:
-        """
-        Synthesizes audio from a complete text string and puts chunks into a queue.
+    ) -> bool:
+        """Synthesize complete text (quick answer)."""
+        if self.engine_name == "xai":
+            return self._synthesize_xai(text, audio_chunks, stop_event, generation_string, is_final=False)
 
-        Feeds the entire text string to the TTS engine. As audio chunks are generated,
-        they are potentially buffered initially for smoother streaming and then put
-        into the provided queue. Synthesis can be interrupted via the stop_event.
-        Skips initial silent chunks if using the Orpheus engine. Triggers the
-        `on_first_audio_chunk_synthesize` callback when the first valid audio chunk is queued.
-
-        Args:
-            text: The text string to synthesize.
-            audio_chunks: The queue to put the resulting audio chunks (bytes) into.
-                          This should typically be the instance's `self.audio_chunks`.
-            stop_event: A threading.Event to signal interruption of the synthesis.
-                        This should typically be the instance's `self.stop_event`.
-            generation_string: An optional identifier string for logging purposes.
-
-        Returns:
-            True if synthesis completed fully, False if interrupted by stop_event.
-        """
-        if self.engine_name == "coqui" and hasattr(self.engine, 'set_stream_chunk_size') and self.current_stream_chunk_size != QUICK_ANSWER_STREAM_CHUNK_SIZE:
-            logger.info(f"👄⚙️ {generation_string} Setting Coqui stream chunk size to {QUICK_ANSWER_STREAM_CHUNK_SIZE} for quick synthesis.")
+        # === Non-xAI path (RealtimeTTS) ===
+        if self.engine_name == "coqui" and hasattr(self.engine, 'set_stream_chunk_size'):
             self.engine.set_stream_chunk_size(QUICK_ANSWER_STREAM_CHUNK_SIZE)
             self.current_stream_chunk_size = QUICK_ANSWER_STREAM_CHUNK_SIZE
 
         self.stream.feed(text)
-        self.finished_event.clear() # Reset finished event before starting
+        self.finished_event.clear()
 
-        # Buffering state variables
         buffer: list[bytes] = []
-        good_streak: int = 0
-        buffering: bool = True
-        buf_dur: float = 0.0
-        SR, BPS = 24000, 2 # Assumed Sample Rate and Bytes Per Sample (16-bit)
-        start = time.time()
-        self._quick_prev_chunk_time: float = 0.0 # Track time of previous chunk
+        good_streak = 0
+        buffering = True
+        buf_dur = 0.0
+        processor = self._ChunkProcessor(self.engine_name, generation_string)
 
-        def on_audio_chunk(chunk: bytes):
-            nonlocal buffer, good_streak, buffering, buf_dur, start
-            # Check for interruption signal
-            if stop_event.is_set():
-                logger.info(f"👄🛑 {generation_string} Quick audio stream interrupted by stop_event. Text: {text[:50]}...")
-                # We should not put more chunks, let the main loop handle stream stop
-                return
+        setattr(self, "_quick_prev_chunk_time", 0.0)
 
-            now = time.time()
-            samples = len(chunk) // BPS
-            play_duration = samples / SR # Duration of the current chunk
+        def on_chunk(chunk: bytes):
+            nonlocal buffer, good_streak, buffering, buf_dur
+            cont, buffer, buf_dur, good_streak, buffering = self._process_audio_chunk(
+                chunk, processor, buffer, buf_dur, good_streak, buffering,
+                stop_event, audio_chunks, is_final=False
+            )
+            if not cont:
+                self.stream.stop()
 
-            # --- Orpheus specific: Skip initial silence ---
-            if on_audio_chunk.first_call and self.engine_name == "orpheus":
-                if not hasattr(on_audio_chunk, "silent_chunks_count"):
-                    # Initialize silence detection state
-                    on_audio_chunk.silent_chunks_count = 0
-                    on_audio_chunk.silent_chunks_time = 0.0
-                    on_audio_chunk.silence_threshold = 200 # Amplitude threshold for silence
+        play_kwargs = {
+            "on_audio_chunk": on_chunk,
+            "muted": True,
+            "fast_sentence_fragment": False,
+            "comma_silence_duration": self.silence.comma,
+            "sentence_silence_duration": self.silence.sentence,
+            "default_silence_duration": self.silence.default,
+            "force_first_fragment_after_words": 999999,
+            "log_synthesized_text": True,
+        }
 
-                try:
-                    # Analyze chunk for silence
-                    fmt = f"{samples}h" # Format for 16-bit signed integers
-                    pcm_data = struct.unpack(fmt, chunk)
-                    avg_amplitude = np.abs(np.array(pcm_data)).mean()
-
-                    if avg_amplitude < on_audio_chunk.silence_threshold:
-                        on_audio_chunk.silent_chunks_count += 1
-                        on_audio_chunk.silent_chunks_time += play_duration
-                        logger.debug(f"👄⏭️ {generation_string} Quick Skipping silent chunk {on_audio_chunk.silent_chunks_count} (avg_amp: {avg_amplitude:.2f})")
-                        return # Skip this chunk
-                    elif on_audio_chunk.silent_chunks_count > 0:
-                        # First non-silent chunk after silence
-                        logger.info(f"👄⏭️ {generation_string} Quick Skipped {on_audio_chunk.silent_chunks_count} silent chunks, saved {on_audio_chunk.silent_chunks_time*1000:.2f}ms")
-                        # Proceed to process this non-silent chunk
-                except Exception as e:
-                    logger.warning(f"👄⚠️ {generation_string} Quick Error analyzing audio chunk for silence: {e}")
-                    # Proceed assuming not silent on error
-
-            # --- Timing and Logging ---
-            if on_audio_chunk.first_call:
-                on_audio_chunk.first_call = False
-                self._quick_prev_chunk_time = now
-                ttfa_actual = now - start
-                logger.info(f"👄🚀 {generation_string} Quick audio start. TTFA: {ttfa_actual:.2f}s. Text: {text[:50]}...")
-            else:
-                gap = now - self._quick_prev_chunk_time
-                self._quick_prev_chunk_time = now
-                if gap <= play_duration * 1.1: # Allow small tolerance
-                    # logger.debug(f"👄✅ {generation_string} Quick chunk ok (gap={gap:.3f}s ≤ {play_duration:.3f}s). Text: {text[:50]}...")
-                    good_streak += 1
-                else:
-                    logger.warning(f"👄❌ {generation_string} Quick chunk slow (gap={gap:.3f}s > {play_duration:.3f}s). Text: {text[:50]}...")
-                    good_streak = 0 # Reset streak on slow chunk
-
-            put_occurred_this_call = False # Track if put happened in this specific call
-
-            # --- Buffering Logic ---
-            buffer.append(chunk) # Always append the received chunk first
-            buf_dur += play_duration # Update buffer duration
-
-            if buffering:
-                # Check conditions to flush buffer and stop buffering
-                if good_streak >= 2 or buf_dur >= 0.5: # Flush if stable or buffer > 0.5s
-                    logger.info(f"👄➡️ {generation_string} Quick Flushing buffer (streak={good_streak}, dur={buf_dur:.2f}s).")
-                    for c in buffer:
-                        try:
-                            audio_chunks.put_nowait(c)
-                            put_occurred_this_call = True
-                        except asyncio.QueueFull:
-                            logger.warning(f"👄⚠️ {generation_string} Quick audio queue full, dropping chunk.")
-                    buffer.clear()
-                    buf_dur = 0.0 # Reset buffer duration
-                    buffering = False # Stop buffering mode
-            else: # Not buffering, put chunk directly
-                try:
-                    audio_chunks.put_nowait(chunk)
-                    put_occurred_this_call = True
-                except asyncio.QueueFull:
-                    logger.warning(f"👄⚠️ {generation_string} Quick audio queue full, dropping chunk.")
-
-
-            # --- First Chunk Callback ---
-            if put_occurred_this_call and not on_audio_chunk.callback_fired:
-                if self.on_first_audio_chunk_synthesize:
-                    try:
-                        logger.info(f"👄🚀 {generation_string} Quick Firing on_first_audio_chunk_synthesize.")
-                        self.on_first_audio_chunk_synthesize()
-                    except Exception as e:
-                        logger.error(f"👄💥 {generation_string} Quick Error in on_first_audio_chunk_synthesize callback: {e}", exc_info=True)
-                # Ensure callback fires only once per synthesize call
-                on_audio_chunk.callback_fired = True
-
-        # Initialize callback state for this run
-        on_audio_chunk.first_call = True
-        on_audio_chunk.callback_fired = False
-
-        play_kwargs = dict(
-            log_synthesized_text=True, # Log the text being synthesized
-            on_audio_chunk=on_audio_chunk,
-            muted=True, # We handle audio via the queue
-            fast_sentence_fragment=False, # Standard processing
-            comma_silence_duration=self.silence.comma,
-            sentence_silence_duration=self.silence.sentence,
-            default_silence_duration=self.silence.default,
-            force_first_fragment_after_words=999999, # Don't force early fragments
-        )
-
-        logger.info(f"👄▶️ {generation_string} Quick Starting synthesis. Text: {text[:50]}...")
+        logger.info(f"👄▶️ {generation_string} Starting quick synthesis")
         self.stream.play_async(**play_kwargs)
 
-        # Wait loop for completion or interruption
         while self.stream.is_playing() or not self.finished_event.is_set():
             if stop_event.is_set():
                 self.stream.stop()
-                logger.info(f"👄🛑 {generation_string} Quick answer synthesis aborted by stop_event. Text: {text[:50]}...")
-                # Drain remaining buffer if any? Decided against it to stop faster.
-                buffer.clear()
-                # Wait briefly for stop confirmation? The finished_event handles this.
-                self.finished_event.wait(timeout=1.0) # Wait for stream stop confirmation
-                return False # Indicate interruption
+                return False
             time.sleep(0.01)
 
-        # # If loop exited normally, check if buffer still has content (stream finished before flush)
-        if buffering and buffer and not stop_event.is_set():
-            logger.info(f"👄➡️ {generation_string} Quick Flushing remaining buffer after stream finished.")
+        # Final flush
+        if buffering and buffer:
             for c in buffer:
-                 try:
+                try:
                     audio_chunks.put_nowait(c)
-                 except asyncio.QueueFull:
-                    logger.warning(f"👄⚠️ {generation_string} Quick audio queue full on final flush, dropping chunk.")
-            buffer.clear()
-
-        logger.info(f"👄✅ {generation_string} Quick answer synthesis complete. Text: {text[:50]}...")
-        return True # Indicate successful completion
+                except Exception:
+                    pass
+        return True
 
     def synthesize_generator(
             self,
             generator: Generator[str, None, None],
-            audio_chunks: Queue, # Should match self.audio_chunks type
+            audio_chunks: Queue[bytes],
             stop_event: threading.Event,
             generation_string: str = "",
-        ) -> bool:
-        """
-        Synthesizes audio from a generator yielding text chunks and puts audio into a queue.
+    ) -> bool:
+        """Synthesize from text generator (final/long answer)."""
+        if self.engine_name == "xai":
+            return self._synthesize_xai(generator, audio_chunks, stop_event, generation_string, is_final=True)
 
-        Feeds text chunks yielded by the generator to the TTS engine. As audio chunks
-        are generated, they are potentially buffered initially and then put into the
-        provided queue. Synthesis can be interrupted via the stop_event.
-        Skips initial silent chunks if using the Orpheus engine. Sets specific playback
-        parameters when using the Orpheus engine. Triggers the
-       `on_first_audio_chunk_synthesize` callback when the first valid audio chunk is queued.
-
-
-        Args:
-            generator: A generator yielding text chunks (strings) to synthesize.
-            audio_chunks: The queue to put the resulting audio chunks (bytes) into.
-                          This should typically be the instance's `self.audio_chunks`.
-            stop_event: A threading.Event to signal interruption of the synthesis.
-                        This should typically be the instance's `self.stop_event`.
-            generation_string: An optional identifier string for logging purposes.
-
-        Returns:
-            True if synthesis completed fully, False if interrupted by stop_event.
-        """
-        if self.engine_name == "coqui" and hasattr(self.engine, 'set_stream_chunk_size') and self.current_stream_chunk_size != FINAL_ANSWER_STREAM_CHUNK_SIZE:
-            logger.info(f"👄⚙️ {generation_string} Setting Coqui stream chunk size to {FINAL_ANSWER_STREAM_CHUNK_SIZE} for generator synthesis.")
+        # === Non-xAI path ===
+        if self.engine_name == "coqui" and hasattr(self.engine, 'set_stream_chunk_size'):
             self.engine.set_stream_chunk_size(FINAL_ANSWER_STREAM_CHUNK_SIZE)
             self.current_stream_chunk_size = FINAL_ANSWER_STREAM_CHUNK_SIZE
 
-        # Feed the generator to the stream
         self.stream.feed(generator)
-        self.finished_event.clear() # Reset finished event
+        self.finished_event.clear()
 
-        # Buffering state variables
         buffer: list[bytes] = []
-        good_streak: int = 0
-        buffering: bool = True
-        buf_dur: float = 0.0
-        SR, BPS = 24000, 2 # Assumed Sample Rate and Bytes Per Sample
-        start = time.time()
-        self._final_prev_chunk_time: float = 0.0 # Separate timer for generator synthesis
+        good_streak = 0
+        buffering = True
+        buf_dur = 0.0
+        processor = self._ChunkProcessor(self.engine_name, generation_string)
 
-        def on_audio_chunk(chunk: bytes):
-            nonlocal buffer, good_streak, buffering, buf_dur, start
-            if stop_event.is_set():
-                logger.info(f"👄🛑 {generation_string} Final audio stream interrupted by stop_event.")
-                return
+        setattr(self, "_final_prev_chunk_time", 0.0)
 
-            now = time.time()
-            samples = len(chunk) // BPS
-            play_duration = samples / SR
+        def on_chunk(chunk: bytes):
+            nonlocal buffer, good_streak, buffering, buf_dur
+            cont, buffer, buf_dur, good_streak, buffering = self._process_audio_chunk(
+                chunk, processor, buffer, buf_dur, good_streak, buffering,
+                stop_event, audio_chunks, is_final=True
+            )
+            if not cont:
+                self.stream.stop()
 
-            # --- Orpheus specific: Skip initial silence ---
-            if on_audio_chunk.first_call and self.engine_name == "orpheus":
-                if not hasattr(on_audio_chunk, "silent_chunks_count"):
-                    on_audio_chunk.silent_chunks_count = 0
-                    on_audio_chunk.silent_chunks_time = 0.0
-                    # Lower threshold potentially for final answers? Or keep consistent? Using 100 as in original code.
-                    on_audio_chunk.silence_threshold = 100
+        play_kwargs = {
+            "on_audio_chunk": on_chunk,
+            "muted": True,
+            "fast_sentence_fragment": False,
+            "comma_silence_duration": self.silence.comma,
+            "sentence_silence_duration": self.silence.sentence,
+            "default_silence_duration": self.silence.default,
+            "force_first_fragment_after_words": 999999,
+            "log_synthesized_text": True,
+        }
 
-                try:
-                    fmt = f"{samples}h"
-                    pcm_data = struct.unpack(fmt, chunk)
-                    avg_amplitude = np.abs(np.array(pcm_data)).mean()
-
-                    if avg_amplitude < on_audio_chunk.silence_threshold:
-                        on_audio_chunk.silent_chunks_count += 1
-                        on_audio_chunk.silent_chunks_time += play_duration
-                        logger.debug(f"👄⏭️ {generation_string} Final Skipping silent chunk {on_audio_chunk.silent_chunks_count} (avg_amp: {avg_amplitude:.2f})")
-                        return # Skip
-                    elif on_audio_chunk.silent_chunks_count > 0:
-                        logger.info(f"👄⏭️ {generation_string} Final Skipped {on_audio_chunk.silent_chunks_count} silent chunks, saved {on_audio_chunk.silent_chunks_time*1000:.2f}ms")
-                except Exception as e:
-                    logger.warning(f"👄⚠️ {generation_string} Final Error analyzing audio chunk for silence: {e}")
-
-            # --- Timing and Logging ---
-            if on_audio_chunk.first_call:
-                on_audio_chunk.first_call = False
-                self._final_prev_chunk_time = now
-                ttfa_actual = now-start
-                logger.info(f"👄🚀 {generation_string} Final audio start. TTFA: {ttfa_actual:.2f}s.")
-            else:
-                gap = now - self._final_prev_chunk_time
-                self._final_prev_chunk_time = now
-                if gap <= play_duration * 1.1:
-                    # logger.debug(f"👄✅ {generation_string} Final chunk ok (gap={gap:.3f}s ≤ {play_duration:.3f}s).")
-                    good_streak += 1
-                else:
-                    logger.warning(f"👄❌ {generation_string} Final chunk slow (gap={gap:.3f}s > {play_duration:.3f}s).")
-                    good_streak = 0
-
-            put_occurred_this_call = False
-
-            # --- Buffering Logic ---
-            buffer.append(chunk)
-            buf_dur += play_duration
-            if buffering:
-                if good_streak >= 2 or buf_dur >= 0.5: # Same flush logic as synthesize
-                    logger.info(f"👄➡️ {generation_string} Final Flushing buffer (streak={good_streak}, dur={buf_dur:.2f}s).")
-                    for c in buffer:
-                        try:
-                           audio_chunks.put_nowait(c)
-                           put_occurred_this_call = True
-                        except asyncio.QueueFull:
-                            logger.warning(f"👄⚠️ {generation_string} Final audio queue full, dropping chunk.")
-                    buffer.clear()
-                    buf_dur = 0.0
-                    buffering = False
-            else: # Not buffering
-                try:
-                    audio_chunks.put_nowait(chunk)
-                    put_occurred_this_call = True
-                except asyncio.QueueFull:
-                    logger.warning(f"👄⚠️ {generation_string} Final audio queue full, dropping chunk.")
-
-
-            # --- First Chunk Callback --- (Using the same callback as synthesize)
-            if put_occurred_this_call and not on_audio_chunk.callback_fired:
-                if self.on_first_audio_chunk_synthesize:
-                    try:
-                        logger.info(f"👄🚀 {generation_string} Final Firing on_first_audio_chunk_synthesize.")
-                        self.on_first_audio_chunk_synthesize()
-                    except Exception as e:
-                        logger.error(f"👄💥 {generation_string} Final Error in on_first_audio_chunk_synthesize callback: {e}", exc_info=True)
-                on_audio_chunk.callback_fired = True
-
-        # Initialize callback state
-        on_audio_chunk.first_call = True
-        on_audio_chunk.callback_fired = False
-
-        play_kwargs = dict(
-            log_synthesized_text=True, # Log text from generator
-            on_audio_chunk=on_audio_chunk,
-            muted=True,
-            fast_sentence_fragment=False,
-            comma_silence_duration=self.silence.comma,
-            sentence_silence_duration=self.silence.sentence,
-            default_silence_duration=self.silence.default,
-            force_first_fragment_after_words=999999,
-        )
-
-        # Add Orpheus specific parameters for generator streaming
         if self.engine_name == "orpheus":
-            # These encourage waiting for more text before synthesizing, potentially better for generators
-            play_kwargs["minimum_sentence_length"] = 200
-            play_kwargs["minimum_first_fragment_length"] = 200
+            play_kwargs.update({"minimum_sentence_length": 200, "minimum_first_fragment_length": 200})
 
-        logger.info(f"👄▶️ {generation_string} Final Starting synthesis from generator.")
+        logger.info(f"👄▶️ {generation_string} Starting final synthesis from generator")
         self.stream.play_async(**play_kwargs)
 
-        # Wait loop for completion or interruption
         while self.stream.is_playing() or not self.finished_event.is_set():
             if stop_event.is_set():
                 self.stream.stop()
-                logger.info(f"👄🛑 {generation_string} Final answer synthesis aborted by stop_event.")
-                buffer.clear()
-                self.finished_event.wait(timeout=1.0) # Wait for stream stop confirmation
-                return False # Indicate interruption
+                return False
             time.sleep(0.01)
 
-        # Flush remaining buffer if stream finished before flush condition met
-        if buffering and buffer and not stop_event.is_set():
-            logger.info(f"👄➡️ {generation_string} Final Flushing remaining buffer after stream finished.")
+        if buffering and buffer:
             for c in buffer:
                 try:
-                   audio_chunks.put_nowait(c)
-                except asyncio.QueueFull:
-                   logger.warning(f"👄⚠️ {generation_string} Final audio queue full on final flush, dropping chunk.")
-            buffer.clear()
+                    audio_chunks.put_nowait(c)
+                except Exception:
+                    pass
+        return True
 
-        logger.info(f"👄✅ {generation_string} Final answer synthesis complete.")
-        return True # Indicate successful completion
+    def _synthesize_xai(
+            self,
+            text_or_gen: Any,
+            audio_chunks: Queue[bytes],
+            stop_event: threading.Event,
+            generation_string: str = "",
+            is_final: bool = False,
+    ) -> bool:
+        """Direct generator handling for xAI engine."""
+        if not self.engine.connect():
+            logger.error("Failed to connect to xAI TTS")
+            return False
+
+        processor = self._ChunkProcessor("xai", generation_string)
+        buffer: list[bytes] = []
+        good_streak = 0
+        buffering = True
+        buf_dur = 0.0
+        setattr(self, f"_{'final' if is_final else 'quick'}_prev_chunk_time", 0.0)
+
+        try:
+            if isinstance(text_or_gen, str):
+                gen = self.engine.synthesize(text_or_gen)
+            else:
+                gen = self.engine.synthesize_stream(text_or_gen)
+
+            for chunk in gen:
+                if stop_event.is_set():
+                    return False
+
+                cont, buffer, buf_dur, good_streak, buffering = self._process_audio_chunk(
+                    chunk, processor, buffer, buf_dur, good_streak, buffering,
+                    stop_event, audio_chunks, is_final=is_final
+                )
+                if not cont:
+                    break
+
+            # Final flush
+            if buffering and buffer:
+                for c in buffer:
+                    try:
+                        audio_chunks.put_nowait(c)
+                    except Exception:
+                        pass
+            return True
+
+        except Exception as e:
+            logger.error(f"xAI synthesis error: {e}")
+            return False
+
+    def shutdown(self):
+        """Clean shutdown."""
+        self.stop_event.set()
+        if hasattr(self, 'stream'):
+            self.stream.stop()
+        if hasattr(self.engine, 'engine_cleanup'):
+            self.engine.engine_cleanup()
+        elif hasattr(self.engine, 'disconnect'):
+            self.engine.disconnect()

@@ -583,10 +583,18 @@ class DeepgramTranscriptionProcessor:
         """Start background thread for silence monitoring."""
         def monitor():
             hot = False
+            sentence_end_fired = False  # Guard to prevent repeated calls
+            last_realtime_text = None  # Track text changes
+            
             while not self.shutdown_performed:
                 try:
                     if self.recorder.silence_active and self.realtime_text:
                         silence_duration = time.time() - self.recorder.last_speech_time
+                        
+                        # Reset sentence_end_fired if text changed
+                        if self.realtime_text != last_realtime_text:
+                            sentence_end_fired = False
+                            last_realtime_text = self.realtime_text
                         
                         # Hot state detection
                         if silence_duration > 0.3 and not hot:
@@ -594,14 +602,16 @@ class DeepgramTranscriptionProcessor:
                             if self.potential_full_transcription_callback:
                                 self.potential_full_transcription_callback(self.realtime_text)
                         
-                        # Potential sentence end
-                        if silence_duration > 0.5:
+                        # Potential sentence end (only once per silence period)
+                        if silence_duration > 0.5 and not sentence_end_fired:
                             if self.potential_sentence_end and self.realtime_text:
                                 self.potential_sentence_end(self.realtime_text)
+                                sentence_end_fired = True
                     
                     elif hot and not self.recorder.silence_active:
-                        # Transition from hot to cold
+                        # Transition from hot to cold (speech resumed)
                         hot = False
+                        sentence_end_fired = False  # Reset for next silence period
                         if self.potential_full_transcription_abort_callback:
                             self.potential_full_transcription_abort_callback()
                     
