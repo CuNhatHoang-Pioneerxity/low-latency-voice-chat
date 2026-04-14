@@ -3,7 +3,7 @@ import logging
 from typing import Optional, Callable
 import numpy as np
 from scipy.signal import resample_poly
-from deepgram_stt import DeepgramTranscriptionProcessor
+from transcribe import TranscriptionProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,13 @@ class AudioInputProcessor:
                 if self.realtime_callback:
                     self.realtime_callback(text)
 
-        self.transcriber = DeepgramTranscriptionProcessor(
+        self.transcriber = TranscriptionProcessor(
             source_language=language,
             realtime_transcription_callback=partial_transcript_callback,
             on_recording_start_callback=self._on_recording_start,
             silence_active_callback=self._silence_active_callback,
             pipeline_latency=pipeline_latency,
+            is_orpheus=is_orpheus,
         )
         # Flag to indicate if the transcription loop has failed fatally
         self._transcription_failed = False

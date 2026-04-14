@@ -33,18 +33,18 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, Response, FileResponse
 
 USE_SSL = False
-TTS_START_ENGINE = "xai"
-# TTS_START_ENGINE = "kokoro"
+# TTS_START_ENGINE = "xai"
+TTS_START_ENGINE = "kokoro"
 # TTS_START_ENGINE = "orpheus"
 # TTS_START_ENGINE = "coqui"  # requires DeepSpeed
 # TTS_START_ENGINE = "openai"  # requires OPENAI_API_KEY env var
 TTS_ORPHEUS_MODEL = "Orpheus_3B-1BaseGGUF/mOrpheus_3B-1Base_Q4_K_M.gguf"
 TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
-LLM_START_PROVIDER = "xai"
-LLM_START_MODEL = "grok-3"
-# LLM_START_PROVIDER = "ollama"
-# LLM_START_MODEL = "llama3.2"
+# LLM_START_PROVIDER = "xai"
+# LLM_START_MODEL = "grok-3"
+LLM_START_PROVIDER = "ollama"
+LLM_START_MODEL = "llama3.2"
 # LLM_START_MODEL = "hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M"
 # LLM_START_PROVIDER = "lmstudio"
 # LLM_START_MODEL = "Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q3_K_L.gguf"
@@ -75,7 +75,7 @@ from audio_in import AudioInputProcessor
 from speech_pipeline_manager import SpeechPipelineManager
 from colors import Colors
 
-LANGUAGE = "vi"
+LANGUAGE = "en"
 # TTS_FINAL_TIMEOUT = 0.5 # unsure if 1.0 is needed for stability
 TTS_FINAL_TIMEOUT = 1.0 # unsure if 1.0 is needed for stability
 
