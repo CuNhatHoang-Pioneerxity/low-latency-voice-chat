@@ -33,18 +33,18 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, Response, FileResponse
 
 USE_SSL = False
-# TTS_START_ENGINE = "xai"
-TTS_START_ENGINE = "kokoro"
+TTS_START_ENGINE = "xai"
+# TTS_START_ENGINE = "kokoro"
 # TTS_START_ENGINE = "orpheus"
 # TTS_START_ENGINE = "coqui"  # requires DeepSpeed
 # TTS_START_ENGINE = "openai"  # requires OPENAI_API_KEY env var
 TTS_ORPHEUS_MODEL = "Orpheus_3B-1BaseGGUF/mOrpheus_3B-1Base_Q4_K_M.gguf"
 TTS_ORPHEUS_MODEL = "orpheus-3b-0.1-ft-Q8_0-GGUF/orpheus-3b-0.1-ft-q8_0.gguf"
 
-# LLM_START_PROVIDER = "xai"
-# LLM_START_MODEL = "grok-3"
-LLM_START_PROVIDER = "ollama"
-LLM_START_MODEL = "llama3.2"
+LLM_START_PROVIDER = "xai"
+LLM_START_MODEL = "grok-3"
+# LLM_START_PROVIDER = "ollama"
+# LLM_START_MODEL = "qwen3:8b"
 # LLM_START_MODEL = "hf.co/bartowski/huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated-GGUF:Q4_K_M"
 # LLM_START_PROVIDER = "lmstudio"
 # LLM_START_MODEL = "Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q3_K_L.gguf"
@@ -880,6 +880,21 @@ class TranscriptionCallbacks:
                     "content": txt
                 })
 
+    def on_ui_update(self, ui_data: dict):
+        """
+        Callback invoked when the Backend LLM produces a UI update (tool result).
+
+        Sends the UI update to the client for visual display on the left panel.
+
+        Args:
+            ui_data: The UI update data (e.g., order_update, payment_qr).
+        """
+        logger.info(f"{Colors.apply(' UI UPDATE: ').cyan}{ui_data.get('type', 'unknown')}")
+        self.message_queue.put_nowait({
+            "type": "ui_update",
+            "content": ui_data
+        })
+
     def on_recording_start(self):
         """
         Callback invoked when the audio input processor starts recording user speech.
@@ -1015,6 +1030,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Assign callback to the SpeechPipelineManager (global component)
     app.state.SpeechPipelineManager.on_partial_assistant_text = callbacks.on_partial_assistant_text
+    app.state.SpeechPipelineManager.on_ui_update = callbacks.on_ui_update
 
     # Create tasks for handling different responsibilities
     # Pass the 'callbacks' instance to tasks that need connection-specific state
@@ -1043,6 +1059,12 @@ async def websocket_endpoint(ws: WebSocket):
         # Ensure all tasks are awaited after cancellation
         # Use return_exceptions=True to prevent gather from stopping on first error during cleanup
         await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Clear conversation history for peer-to-peer single-user system
+        logger.info("🖥🧹 Clearing conversation history...")
+        app.state.SpeechPipelineManager.history.clear()
+        app.state.SpeechPipelineManager.backend_llm.reset()
+        
         logger.info("🖥️❌ WebSocket session ended.")
 
 # --------------------------------------------------------------------

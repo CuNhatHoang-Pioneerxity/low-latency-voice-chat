@@ -1,5 +1,5 @@
 # speech_pipeline_manager.py
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, Any, List
 import threading
 import logging
 import time
@@ -12,6 +12,11 @@ from text_similarity import TextSimilarity
 from text_context import TextContext
 from llm_module import LLM
 from colors import Colors
+
+# Dual LLM imports
+from backend_llm import BackendLLM
+from speaker_llm import SpeakerLLM
+from tools import ToolExecutor, parse_tool_calls
 
 # (Logging setup)
 logger = logging.getLogger(__name__)
@@ -107,6 +112,12 @@ class RunningGeneration:
         self.audio_final_finished: bool = False
         self.final_answer: str = ""
 
+        # Dual LLM fields
+        self.speak_contexts: List[str] = []  # Contexts for Speaker LLM
+        self.ui_updates: List[Dict[str, Any]] = []  # UI updates from tools
+        self.backend_finished: bool = False
+        self.speaker_answer: str = ""  # Natural speech from Speaker LLM
+        
         self.completed: bool = False
 
 
@@ -164,8 +175,25 @@ class SpeechPipelineManager:
         self.text_context = TextContext()
         self.generation_counter: int = 0
         self.abort_lock = threading.Lock()
+        
+        # --- Dual LLM Architecture ---
+        # Backend LLM (Brain) - handles logic, state, tools
+        self.backend_llm = BackendLLM(
+            backend=self.llm_provider,
+            model=self.llm_model,
+        )
+        self.backend_llm.prewarm()
+        
+        # Speaker LLM (Waiter) - generates natural speech
+        self.speaker_llm = SpeakerLLM(
+            backend=self.llm_provider,
+            model=self.llm_model,
+        )
+        self.speaker_llm.prewarm()
+        
+        # Keep legacy LLM for backward compatibility (optional)
         self.llm = LLM(
-            backend=self.llm_provider, # Or your backend
+            backend=self.llm_provider,
             model=self.llm_model,
             system_prompt=self.system_prompt,
             no_think=no_think,
@@ -173,7 +201,10 @@ class SpeechPipelineManager:
         self.llm.prewarm()
         self.llm_inference_time = self.llm.measure_inference_time()
         logger.debug(f"🗣️🧠🕒 LLM inference time: {self.llm_inference_time:.2f}ms")
-
+        
+        # UI update callback for backend tool results (visual display)
+        self.on_ui_update: Optional[Callable[[Dict[str, Any]], None]] = None
+        
         # --- State ---
         self.history = []
         self.requests_queue = Queue()
@@ -384,6 +415,96 @@ class SpeechPipelineManager:
                     current_text = current_text[len(pattern):]
         
         return current_text
+
+    def process_dual_llm_generation(self, txt: str) -> bool:
+        """
+        Process user input through the dual LLM architecture.
+        
+        Flow:
+        1. BackendLLM (Brain) processes input -> outputs JSON tool calls
+        2. Execute tools -> collect UI updates and speak_contexts
+        3. Send UI updates to callback (visual display on left side)
+        4. SpeakerLLM (Waiter) generates natural speech from contexts
+        5. Set quick_answer for TTS synthesis
+        
+        Args:
+            txt: User input text
+            
+        Returns:
+            True if processing completed successfully
+        """
+        if not self.running_generation:
+            logger.warning("process_dual_llm_generation called with no running_generation")
+            return False
+            
+        current_gen = self.running_generation
+        gen_id = current_gen.id
+        logger.info(f" dual_llm [Gen {gen_id}] Processing: '{txt[:50]}...'")
+        
+        try:
+            # Step 1: Process through BackendLLM
+            for result in self.backend_llm.process(txt):
+                # Check for abort
+                if current_gen.abortion_started or self.stop_llm_request_event.is_set():
+                    logger.info(f" dual_llm [Gen {gen_id}] Aborted during backend processing")
+                    return False
+                
+                # Step 2: Collect results
+                if result.get('ui_update'):
+                    current_gen.ui_updates.append(result['ui_update'])
+                    # Send to UI callback immediately (visual display)
+                    if self.on_ui_update:
+                        try:
+                            self.on_ui_update(result['ui_update'])
+                        except Exception as e:
+                            logger.warning(f" dual_llm UI callback error: {e}")
+                
+                if result.get('speak_context'):
+                    current_gen.speak_contexts.append(result['speak_context'])
+            
+            # Step 3: Get combined speak contexts
+            combined_context = " | ".join(current_gen.speak_contexts)
+            
+            # Include user's original input in the context for Speaker LLM
+            if combined_context:
+                combined_context = f"Customer said: '{txt}'. Context: {combined_context}"
+            else:
+                # Fallback if no speak contexts were generated
+                combined_context = f"Customer said: '{txt}'. Please respond naturally."
+                logger.warning(f" dual_llm [Gen {gen_id}] No speak contexts, using fallback")
+            
+            logger.info(f" dual_llm [Gen {gen_id}] Speak context: '{combined_context[:150]}...'")
+            
+            # Step 4: Generate natural speech via SpeakerLLM
+            speaker_answer = ""
+            for chunk in self.speaker_llm.generate_response(combined_context):
+                if current_gen.abortion_started or self.stop_llm_request_event.is_set():
+                    logger.info(f" dual_llm [Gen {gen_id}] Aborted during speaker generation")
+                    return False
+                speaker_answer += chunk
+            
+            # Clean up speaker answer
+            speaker_answer = speaker_answer.strip()
+            current_gen.speaker_answer = speaker_answer
+            current_gen.quick_answer = speaker_answer
+            current_gen.quick_answer_provided = True
+            
+            logger.info(f" dual_llm [Gen {gen_id}] Speaker answer: '{speaker_answer[:100]}...'")
+            
+            # Step 5: Notify callback and signal TTS
+            if self.on_partial_assistant_text:
+                self.on_partial_assistant_text(speaker_answer)
+            
+            self.llm_answer_ready_event.set()
+            
+            current_gen.backend_finished = True
+            current_gen.llm_finished = True
+            return True
+            
+        except Exception as e:
+            logger.exception(f" dual_llm [Gen {gen_id}] Error: {e}")
+            current_gen.llm_aborted = True
+            return False
 
     def _llm_inference_worker(self):
         """
@@ -874,19 +995,17 @@ class SpeechPipelineManager:
         self.running_generation.text = txt
 
         try:
-            logger.info(f"🗣️🧠🚀 [Gen {new_gen_id}] Calling LLM generate...")
-            # TODO: Update history management if needed
-            # self.history.append({"role": "user", "content": txt}) # Example history update
-            self.running_generation.llm_generator = self.llm.generate(
-                text=txt,
-                history=self.history, # Pass current history
-                use_system_prompt=True,
-            )
-            logger.info(f"🗣️🧠✔️ [Gen {new_gen_id}] LLM generator created. Setting generator ready event.")
-            self.generator_ready_event.set() # Signal LLM worker
+            logger.info(f" dual_llm [Gen {new_gen_id}] Starting dual LLM processing...")
+            # Use dual LLM architecture instead of single LLM
+            success = self.process_dual_llm_generation(txt)
+            if success:
+                logger.info(f" dual_llm [Gen {new_gen_id}] Dual LLM completed successfully.")
+            else:
+                logger.warning(f" dual_llm [Gen {new_gen_id}] Dual LLM processing failed or aborted.")
+                self.running_generation = None
         except Exception as e:
-            logger.exception(f"🗣️🧠💥 [Gen {new_gen_id}] Failed to create LLM generator: {e}")
-            self.running_generation = None # Clean up if generator creation failed
+            logger.exception(f" dual_llm [Gen {new_gen_id}] Failed to process: {e}")
+            self.running_generation = None # Clean up on failure
 
 
     def process_abort_generation(self):

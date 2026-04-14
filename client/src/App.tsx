@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useWebSocket, useAudioCapture, useTTSPlayback } from './hooks';
-import { ChatMessage, ControlPanel, Header, SettingsModal } from './components';
+import { BackendPanel, ChatMessage, ControlPanel, Header, SettingsModal } from './components';
 import type { ChatMessage as ChatMessageType, WebSocketMessage, HealthData } from './types';
+import type { BackendUpdate } from './components';
 import './App.css';
 
 const API_URL = import.meta.env.VITE_BACKEND_URL
@@ -17,6 +18,7 @@ const App: React.FC = () => {
   const [speed, setSpeed] = useState(0);
   const [ignoreIncomingTTS, setIgnoreIncomingTTS] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [backendUpdates, setBackendUpdates] = useState<BackendUpdate[]>([]);
 
   const ignoreTTSRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -107,6 +109,12 @@ const App: React.FC = () => {
         sendMessage({ type: 'tts_stop' });
         break;
 
+      case 'ui_update':
+        if (content && typeof content === 'object') {
+          setBackendUpdates(prev => [...prev, content as unknown as BackendUpdate]);
+        }
+        break;
+
       default:
         break;
     }
@@ -166,6 +174,7 @@ const App: React.FC = () => {
     setChatHistory([]);
     setTypingUser('');
     setTypingAssistant('');
+    setBackendUpdates([]);
     sendMessage({ type: 'clear_history' });
   };
 
@@ -179,7 +188,10 @@ const App: React.FC = () => {
       <div className="app-container">
         <Header isConnected={isConnected} healthData={healthData} />
 
-        <div className="messages-container">
+        <div className="main-content">
+          <BackendPanel updates={backendUpdates} />
+
+          <div className="messages-container">
           <div className="messages">
             {chatHistory.length === 0 && !typingUser && !typingAssistant && (
               <div className="empty-state">
@@ -209,6 +221,7 @@ const App: React.FC = () => {
             )}
             <div ref={chatEndRef} />
           </div>
+        </div>
         </div>
 
         <ControlPanel
