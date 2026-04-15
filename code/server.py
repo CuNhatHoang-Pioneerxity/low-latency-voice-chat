@@ -162,7 +162,9 @@ app.add_middleware(
 )
 
 # Mount static files with no cache
-app.mount("/static", NoCacheStaticFiles(directory="static"), name="static")
+import os
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", NoCacheStaticFiles(directory=static_dir), name="static")
 
 @app.get("/favicon.ico")
 async def favicon():
@@ -172,7 +174,7 @@ async def favicon():
     Returns:
         A FileResponse containing the favicon.
     """
-    return FileResponse("static/favicon.ico")
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "favicon.ico"))
 
 # --------------------------------------------------------------------
 # System Prompt Configuration API

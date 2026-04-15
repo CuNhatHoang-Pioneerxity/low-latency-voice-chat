@@ -9,7 +9,6 @@ from scipy import signal
 import numpy as np
 import threading
 import textwrap
-import torch
 import json
 import copy
 import time
@@ -17,7 +16,7 @@ import re
 from typing import Optional, Callable, Any, Dict, List
 
 # --- Configuration Flags ---
-USE_TURN_DETECTION = True
+USE_TURN_DETECTION = False
 START_STT_SERVER = False # Set to True to use the client/server version of RealtimeSTT
 
 # --- Recorder Configuration (Moved here for clarity, can be externalized) ---

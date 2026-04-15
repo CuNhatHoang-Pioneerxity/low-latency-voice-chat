@@ -11,14 +11,12 @@ from typing import Callable, Generator, Optional, Any
 import numpy as np
 from huggingface_hub import hf_hub_download
 
-# RealtimeTTS imports
-from RealtimeTTS import (
-    CoquiEngine, KokoroEngine, OpenAIEngine,
-    OrpheusEngine, OrpheusVoice, TextToAudioStream
-)
-
-# Your xAI engine
+# Your xAI engine (no torch dependency)
 from xai_tts import XAITTSEngine
+
+# RealtimeTTS imports - only loaded when needed (has torch dependency)
+RealtimeTTS = None
+CoquiEngine = KokoroEngine = OpenAIEngine = OrpheusEngine = OrpheusVoice = TextToAudioStream = None
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +48,7 @@ def ensure_lasinya_models(models_root: str = "models", model_name: str = "Lasiny
     for fn in files:
         local_file = os.path.join(base, fn)
         if not os.path.exists(local_file):
-            print(f"👄⏬ Downloading {fn} to {base}")
+            print(f" Downloading {fn} to {base}")
             hf_hub_download(
                 repo_id="KoljaB/XTTS_Lasinya",
                 filename=fn,
@@ -74,6 +72,24 @@ class AudioProcessor:
         self.current_stream_chunk_size = QUICK_ANSWER_STREAM_CHUNK_SIZE
 
         # === Engine Initialization ===
+        # Lazy import RealtimeTTS only for non-xAI engines
+        if self.engine_name != "xai":
+            global RealtimeTTS, CoquiEngine, KokoroEngine, OpenAIEngine, OrpheusEngine, OrpheusVoice, TextToAudioStream
+            if RealtimeTTS is None:
+                import RealtimeTTS as _RealtimeTTS
+                RealtimeTTS = _RealtimeTTS
+                from RealtimeTTS import (
+                    CoquiEngine as _CoquiEngine, KokoroEngine as _KokoroEngine,
+                    OpenAIEngine as _OpenAIEngine, OrpheusEngine as _OrpheusEngine,
+                    OrpheusVoice as _OrpheusVoice, TextToAudioStream as _TextToAudioStream
+                )
+                CoquiEngine = _CoquiEngine
+                KokoroEngine = _KokoroEngine
+                OpenAIEngine = _OpenAIEngine
+                OrpheusEngine = _OrpheusEngine
+                OrpheusVoice = _OrpheusVoice
+                TextToAudioStream = _TextToAudioStream
+
         if self.engine_name == "coqui":
             ensure_lasinya_models()
             self.engine = CoquiEngine(
