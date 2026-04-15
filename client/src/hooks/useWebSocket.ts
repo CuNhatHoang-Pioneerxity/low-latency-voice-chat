@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React from 'react';
 import type { WebSocketMessage } from '../types';
+
+const { useState, useEffect, useRef, useCallback } = React;
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'ws://localhost:8000';
 
@@ -12,6 +14,12 @@ function getWsUrl(): string {
   }
   if (BACKEND_URL.startsWith('http://')) {
     return BACKEND_URL.replace('http://', 'ws://');
+  }
+  // Handle relative paths
+  if (BACKEND_URL.startsWith('/')) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    return `${protocol}//${host}${BACKEND_URL}`;
   }
   return `ws://${BACKEND_URL}`;
 }

@@ -1,0 +1,11 @@
+# Minimal requirements for xAI + Deepgram (no local ML needed)
+numpy
+scipy
+huggingface_hub
+requests
+deepgram-sdk>=3.0.0
+websockets>=12.0
+fastapi
+uvicorn
+python-dotenv
+openai

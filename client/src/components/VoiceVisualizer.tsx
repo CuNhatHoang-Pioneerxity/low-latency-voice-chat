@@ -1,4 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
+
+const { useEffect, useRef } = React;
 import './VoiceVisualizer.css';
 
 interface VoiceVisualizerProps {

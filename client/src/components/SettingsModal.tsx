@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+
+const { useState, useEffect } = React;
 import './SettingsModal.css';
 import type { SystemPromptResponse, TTSEngineResponse, APIResponse } from '../types';
 

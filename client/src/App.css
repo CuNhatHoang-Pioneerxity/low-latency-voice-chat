@@ -1,7 +1,7 @@
 .app {
   min-height: 100vh;
   height: 100vh;
-  background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+  background: linear-gradient(135deg, #050505 0%, #0a0a0a 50%, #121212 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -81,7 +81,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #667eea;
+  color: #0f1323;
 }
 
 .empty-icon svg {

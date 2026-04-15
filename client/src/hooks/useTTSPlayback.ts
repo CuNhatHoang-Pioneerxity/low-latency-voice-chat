@@ -1,4 +1,6 @@
-import { useRef, useCallback, useState } from 'react';
+import React from 'react';
+
+const { useRef, useCallback, useState } = React;
 
 interface TTSPlaybackCallbacks {
   onPlaybackStart?: () => void;

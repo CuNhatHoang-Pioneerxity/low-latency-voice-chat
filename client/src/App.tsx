@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React from 'react';
+
+const { useState, useEffect, useCallback, useRef } = React;
 import { useWebSocket, useAudioCapture, useTTSPlayback } from './hooks';
 import { BackendPanel, ChatMessage, ControlPanel, Header, SettingsModal } from './components';
 import type { ChatMessage as ChatMessageType, WebSocketMessage, HealthData } from './types';
