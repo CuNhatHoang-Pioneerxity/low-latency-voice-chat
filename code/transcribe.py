@@ -28,7 +28,7 @@ DEFAULT_RECORDER_CONFIG: Dict[str, Any] = {
     "model": "medium",
     "realtime_model_type": "medium",
     "use_main_model_for_realtime": False,
-    "language": "en", # Default, will be overridden by source_language in __init__
+    "language": "vi", # Default, will be overridden by source_language in __init__
     "silero_sensitivity": 0.05,
     "webrtc_sensitivity": 3,
     "post_speech_silence_duration": 0.7,

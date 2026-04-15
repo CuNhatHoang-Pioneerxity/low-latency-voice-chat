@@ -33,7 +33,7 @@ class DeepgramConfig:
     """Configuration for Deepgram STT."""
     api_key: Optional[str] = None
     model: str = "nova-2"
-    language: str = "en"
+    language: str = "vi"
     encoding: str = "linear16"
     sample_rate: int = 16000
     channels: int = 1

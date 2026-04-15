@@ -120,7 +120,7 @@ class AudioProcessor:
         elif self.engine_name == "xai":
             self.engine = XAITTSEngine(
                 voice="eve",
-                language="en",
+                language="vi",
                 codec="pcm",
                 sample_rate=24000,
             )

@@ -160,7 +160,7 @@ class ToolExecutor:
                     "order": self.order.get_summary(),
                     "total": self.order.get_total()
                 },
-                speak_context=f"Customer ordered {item['name']} (quantity: {quantity}), added to order successfully"
+                speak_context=f"Customer ordered {item['name']} (quantity: {quantity}, price: {item['price']:,} VND each), added to order successfully"
             )
         return ToolResult(success=False, message="Failed to add item")
     

@@ -52,7 +52,7 @@ class AudioInputProcessor:
                     self.realtime_callback(text)
 
         self.transcriber = DeepgramTranscriptionProcessor(
-            language=language,
+            source_language=language,
             realtime_transcription_callback=partial_transcript_callback,
             on_recording_start_callback=self._on_recording_start,
             silence_active_callback=self._silence_active_callback,
